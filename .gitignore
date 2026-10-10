@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.ts
+*.pcap
+*.cap
+*.log
+probe/
+.DS_Store
+epg-cache.xml
+epg-cache.xml.tmp
+lineup-cache.json
+epg-cache.xml.meta.json
+push_ips_state.json

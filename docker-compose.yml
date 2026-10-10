@@ -1,0 +1,81 @@
+# zapperbridge -- Docker Compose. Pick ONE network option below.
+# Settings live in ./zapperbridge.toml (copy zapperbridge.example.toml). Validate:
+#     docker compose run --rm zapperbridge check
+# Start:   docker compose up -d        Logs: docker compose logs -f
+#
+# Needs a Linux host on the same LAN as the M1. Docker Desktop on macOS or
+# Windows cannot expose LAN IPs to containers; run the bridge natively there.
+
+services:
+  zapperbridge:
+    build: .
+    # image: ghcr.io/jorge123255/zapperbridge:latest   # once published
+    container_name: zapperbridge
+    restart: unless-stopped
+    command: ["run"]            # "check" = validate and exit
+
+    # ---- NETWORK OPTION A (default): host networking --------------------
+    # Simplest. Add each push IP as an alias on the host NIC yourself
+    # (`check` prints the exact `ip addr add` lines). zapperbridge.toml:
+    #   [network] mode = "host"
+    network_mode: host
+
+    # ---- NETWORK OPTION B: macvlan (wired Ethernet) ---------------------
+    # Remove `network_mode: host` above, uncomment this and the `networks:`
+    # block at the bottom. Compose pins ONE ipv4_address per network
+    # attachment, so the container owns advertise_ip only. OPEN ITEM: the
+    # extra push IPs (one per tuner) still need to be added to the container;
+    # that needs NET_ADMIN and an opt-in helper that is NOT in this image yet.
+    # Until then use option A (host aliases) for multi-tuner pushes.
+    #   [network] mode = "macvlan"   advertise_ip = "192.0.2.60"
+    # networks:
+    #   lan:
+    #     ipv4_address: 192.0.2.60   # = advertise_ip
+    #
+    # ---- NETWORK OPTION C: ipvlan L2 (Wi-Fi, or NICs that block macvlan)
+    # Same as B but driver: ipvlan with ipvlan_mode: l2 in the network block.
+    #   [network] mode = "ipvlan"
+
+    environment:
+      ZB_CONFIG: /config/zapperbridge.toml
+      # Any of these override the file (handy for a quick start):
+      # ZB_M1: "192.0.2.10"                 # comma list, or "auto"
+      # ZB_PUSH_POOL: "192.0.2.240-249"
+      # ZB_NETWORK_MODE: host
+      # ZB_ADVERTISE_IP: "192.0.2.60"
+      # ZB_DEVICE_SEED: zapperbridge
+      # ZB_TUNER_CAP: "4"
+      # ZB_UI_MODE: readonly                   # off (default) | readonly
+      # ZUI_TOKEN: "change-me-20-random-chars" # optional UI token (>= 8 chars)
+      # ZUI_ADMIN_TOKEN: ""                    # only for ui.mode = "admin"
+      TZ: UTC
+
+    volumes:
+      - ./zapperbridge.toml:/config/zapperbridge.toml:ro
+      - zapperbridge-data:/data                  # logs, EPG cache, state
+
+    # Ports the app uses (host networking publishes them implicitly):
+    #   TCP 80 HDHR JSON, TCP 5004 HDHR TS, TCP 31061 M1 push (per push IP),
+    #   UDP 31064 M1 announce (listen/announce), UDP 1900 SSDP,
+    #   UDP 65001 HDHR discovery (only if enabled).
+    # Capabilities: nothing privileged. The image runs as uid 10001 and the
+    # python binary carries cap_net_bind_service for :80. Drop everything else:
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    # Do NOT add `no-new-privileges`: it disables the file capability and :80
+    # then fails (set [network] http_port = 8080 if you must).
+    # NET_ADMIN is NOT needed; this image never edits interfaces.
+
+volumes:
+  zapperbridge-data:
+
+# networks:                      # used by options B / C
+#   lan:
+#     driver: macvlan           # or: ipvlan  (+ driver_opts: {ipvlan_mode: l2})
+#     driver_opts:
+#       parent: eth0            # the host NIC on your LAN
+#     ipam:
+#       config:
+#         - subnet: 192.0.2.0/24
+#           gateway: 192.0.2.1
+#           ip_range: 192.0.2.240/28   # addresses Docker may hand out

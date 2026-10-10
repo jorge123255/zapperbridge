@@ -1,0 +1,139 @@
+# zapperbridge.toml -- ONE file for every choice the user has to make.
+# Copy to ./zapperbridge.toml, edit, and mount it at /config/zapperbridge.toml
+# (docker-compose.yml already does). Validate without starting anything:
+#     docker compose run --rm zapperbridge check
+# Every key is optional; the defaults are the safe ones.
+
+# ---------------------------------------------------------------------------
+# 1. WHICH M1s?  One [[m1]] block per ZapperBox M1 (or leave all out).
+#    On each M1: turn ON "sharing" in the Zapper app first, or it answers
+#    NOT_SHARED.  Each M1 becomes its own virtual HDHomeRun with its own
+#    HDHR DeviceID, tuners, and block of device ids + push IPs.
+# ---------------------------------------------------------------------------
+# No [[m1]] block at all  => one M1, auto-discovered from its UDP 31064
+# announce (works with exactly one M1 on the LAN).
+#
+# [[m1]]
+# name    = "living-room"
+# address = "192.0.2.10"      # an IP, "auto", or "auto:<m1 device id>"
+# leases  = 3                    # BRP tuners to register, 1-3 (the M1 grants 3)
+# hls_tuner = true               # also offer the M1's fixed HLS tuner (+1)
+# # advanced, usually leave out (derived, stable across restarts):
+# # device_id    = "02BB0012"    # HDHR DeviceID, 8 hex
+# # devs         = ["02bb00aaaaaa", "02bb00bbbbbb", "02bb00cccccc"]
+# # push_ips     = ["192.0.2.240", "192.0.2.241", "192.0.2.242"]
+# # advertise_ip = "192.0.2.60"  # this virtual HDHR's own IP (see [network])
+# # friendly_name = "Living room M1"
+#
+# [[m1]]                         # a second M1: just add another block
+# name    = "garage"
+# address = "auto:02bb00a00001"  # pick this M1 out by its device id
+# advertise_ip = "192.0.2.61"  # give each extra M1 its own IP (macvlan/ipvlan)
+# # Without its own advertise_ip, extra M1s get shifted HTTP/TS ports and
+# # HDHR clients may only find the one on :80.
+
+# ---------------------------------------------------------------------------
+# 2. PUSH IPs.  The M1 sends each tuner's video to the IP we announce for
+#    that tuner's device id, TCP :31061. Every tuner needs ITS OWN IP, and the
+#    container (or host) must really own it so it can answer ARP.
+#    Never use an M1's own address (always rejected), a real device's address
+#    (list those in reserved_ips below), or anything else already in use.
+# ---------------------------------------------------------------------------
+[push]
+# A list, ranges, or CIDR. Need one IP per tuner (3 per M1) -- a block you
+# have reserved outside your router's DHCP range.
+pool = []                         # e.g. ["192.0.2.240-249"]
+#                                 # e.g. ["192.0.2.240", "192.0.2.241-243"]
+# device ids are derived from  prefix + sha1(seed|m1|slot),  so the same
+# config always yields the same ids. Change the seed for a second install on
+# the same LAN so ids never collide.
+device_seed   = "zapperbridge"
+device_prefix = "02bb00"          # 2-8 hex digits
+# reserved_ips: addresses of REAL devices on your LAN that must never be used
+# as a push IP (validation rejects them). Nothing is built in -- this list is
+# yours. Same forms as pool (single IPs, ranges, CIDR). An M1's own address is
+# always rejected on top of this, no need to list it.
+# Example: a real Zapper Mini (say at 192.0.2.200) would steal the M1's TS
+# pushes if we pointed a virtual tuner at it, so list it:
+# reserved_ips = ["192.0.2.200"]
+#
+# check_free: before starting, send ONE ping and read the ARP/neighbour table
+# for each planned push IP; if something already answers, fail (or just warn,
+# see below) so two machines never fight over an address. Nothing is sent to
+# an M1 or to reserved IPs, nothing is spoofed, and addresses this host
+# already owns (e.g. aliases you added) are fine. On by default. Turn off with
+# check_free = false, env ZB_CHECK_FREE=0, or `entrypoint.py check --skip-free-check`.
+# check_free      = true
+# check_free_fail = true          # false = only warn when an IP answers
+# never_devs = []                 # extra device ids to refuse
+
+# ---------------------------------------------------------------------------
+# 3. NETWORK MODE (must match the compose network you pick)
+#    host     Linux only. Container shares the host NIC. Add each push IP as
+#             an alias on the host (printed by `check`, never run for you).
+#    macvlan  Linux, wired Ethernet. Container gets its own LAN IPs. Wi-Fi
+#             and most hypervisor NICs drop macvlan -> use ipvlan.
+#    ipvlan   Linux, L2 mode. Works on Wi-Fi; all IPs share the host MAC.
+#    Docker Desktop on macOS/Windows cannot do any of these: its VM hides the
+#    LAN. On a Mac keep running the bridge natively.
+# ---------------------------------------------------------------------------
+[network]
+mode = "host"
+# advertise_ip = "192.0.2.60"   # REQUIRED for macvlan/ipvlan: the IP clients
+#                                 # use to reach the HDHR JSON/TS ports
+# http_port = 80                  # HDHR JSON (clients expect 80)
+# ts_port   = 5004
+
+# ---------------------------------------------------------------------------
+# 4. WHAT CLIENTS SEE (HDHomeRun fidelity)
+# ---------------------------------------------------------------------------
+[hdhr]
+mode = "per-m1"                   # "per-m1": one HDHR per M1 (works today)
+                                  # "merged": one HDHR, merged lineup, total TunerCount. PLAN-ONLY:
+                                  #   `check` validates it, `run` refuses (docs/MERGED-LINEUP.md)
+# device_id = "02BB0099"         # merged mode: the one HDHR DeviceID (8 hex; derived if unset)
+# tuner_cap = 4                   # cap the TOTAL advertised TunerCount
+hls_tuner = true                  # default for [[m1]].hls_tuner
+# friendly_name = "ZapperBox M1 (emulated)"
+# --- opt-in, off by default, RESERVED (accepted, ignored until shipped) ---
+# discovery_responder = false     # answer HDHR UDP 65001 discovery
+# checksum_device_id  = false     # real-HDHR-style checksum DeviceID
+#                                 # (clients may rescan/duplicate: opt in only
+#                                 #  on a fresh install)
+
+# ---------------------------------------------------------------------------
+# 4b. DISCOVERY (dry-run planner; nothing here sends anything)
+#     `docker compose run --rm zapperbridge discover --listen 60` listens
+#     passively on UDP 31064 (receive-only), reads each M1's tuner count from
+#     its announce, and prints the device ids + push IPs it WOULD register.
+#     A real Mini seen on the LAN is added to reserved_ips automatically.
+#     Sending an ANNOUNCE needs the explicit command-line flag `--apply`;
+#     no key in this file can turn it on.
+# ---------------------------------------------------------------------------
+[discovery]
+# listen_seconds = 0              # default for `discover` (0 = configured M1s only)
+# sweep = []                      # e.g. ["192.0.2.0/24"]: TCP-connect check of
+#                                 # the BRP port only, no bytes sent; off by default
+
+# ---------------------------------------------------------------------------
+# 5. WEB UI (read-only status pages at http://<host>/ui, see docs/WEBUI.md)
+#    "off"       (default) /ui does not exist.
+#    "readonly"  GET-only dashboard on the same :80 server. Private-LAN source
+#                addresses only. Set env ZUI_TOKEN (>= 8 chars) to also require
+#                a token (Bearer header, or open /ui?token=... once to get a
+#                cookie). Never port-forward it. It listens wherever :80 does
+#                (all interfaces on host networking).
+#    "admin"     RESERVED: accepted but nothing implements it.
+# ---------------------------------------------------------------------------
+[ui]
+mode = "off"                      # "off", "readonly" or "admin"
+# admin needs a token of >=16 chars in env ZUI_ADMIN_TOKEN (not in this file)
+
+# ---------------------------------------------------------------------------
+# 6. REQUEST LOG (JSON lines of stream open/close; path /data/zapperbridge-req.jsonl,
+#    override with env ZB_REQLOG_PATH; see docs/WEBUI.md)
+# ---------------------------------------------------------------------------
+[reqlog]
+enabled = false
+retention_days = 7
+max_mb = 50

@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+.dockerignore
+__pycache__/
+*.pyc
+*.pcap
+tests/
+ops/
+zapperbridge.toml
+*.log
+Dockerfile
+docker-compose.yml
