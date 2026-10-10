@@ -67,7 +67,6 @@ spec:
       containers:
         - name: zapperbridge
           # Published multi-arch image (amd64 + arm64). Pin a version tag.
-          # Also available as ghcr.io/jorge123255/zapperbridge:0.1.0
           image: docker.io/sunnyside1/zapperbridge:v0.1.0
           # Image loaded by hand with `ctr images import` and not pulled? Use:
           #   image: zapperbridge:k3s-test

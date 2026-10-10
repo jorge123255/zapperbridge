@@ -303,7 +303,7 @@ zapperbridge runs on Kubernetes, with limits. A pod normally has no LAN address 
 - **More tuners need more IPs.** Plain Kubernetes can't give pods their own LAN IPs. You need multus with macvlan or ipvlan, MetalLB or kube-vip, or extra IP aliases on the node. None of these are set up or tested here.
 - **The push IP must be reachable by the M1.** The M1 sends video to the IP you register, on TCP `:31061`. With `hostNetwork` that is the node IP, and it must be on the M1's LAN.
 - **Registering with an M1 uses its tuner slots**, and they stay taken while the pod is registered. Don't run a second bridge against the same M1 at the same time.
-- **Use arm64 or amd64 images to match your nodes.** The release workflow builds both amd64 and arm64. If you build it yourself on a different architecture, use `docker build --platform linux/arm64 .`. Without a registry, copy it to the node with `docker save`, then `k3s ctr images import`, and set `imagePullPolicy: Never`.
+- **Use arm64 or amd64 images to match your nodes.** The published image is multi-arch (amd64 and arm64). If you build it yourself on a different architecture, use `docker build --platform linux/arm64 .`. Without a registry, copy it to the node with `docker save`, then `k3s ctr images import`, and set `imagePullPolicy: Never`.
 - **Port 80 is probably taken on k3s.** The bundled Traefik/ServiceLB claims `:80` on every node, so a `hostNetwork` pod can bind it but never gets the traffic. Set `[network] http_port = 8080` (the example does) and point the probes at it. HDHomeRun clients that read the base URL from `discover.json` cope. Clients that assume `:80` may not.
 - Keep the web UI token in a Secret (`ZUI_TOKEN`), never in the ConfigMap. The config file goes in a ConfigMap mounted at `/config`.
 - Don't set `allowPrivilegeEscalation: false`. It disables the file capability that lets the non-root user bind low ports.
@@ -364,7 +364,7 @@ yourself.*
 Standard library only (pytest optional):
 
 ```sh
-python3 -m unittest discover -s tests     # whole suite (CI runs this)
+python3 -m unittest discover -s tests     # whole suite (there is no CI; run tests locally)
 python3 tests/test_multi_m1.py             # or any single file
 ```
 
@@ -378,7 +378,7 @@ service ports.
 Details: [`docs/DOCKER.md`](docs/DOCKER.md), `docker-compose.yml`,
 `zapperbridge.example.toml`. Validate a config with
 `python3 docker/entrypoint.py check` (set `ZB_CONFIG`). Image: `docker pull sunnyside1/zapperbridge:v0.1.0`
-(Docker Hub; a copy is also pushed to `ghcr.io/jorge123255/zapperbridge` by the release workflow);
+(Docker Hub; images are published manually, see [`docs/RELEASING.md`](docs/RELEASING.md));
 or build it yourself with `docker build -t zapperbridge .`.
 
 ## License
