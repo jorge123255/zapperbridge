@@ -13,3 +13,4 @@ epg-cache.xml.tmp
 lineup-cache.json
 epg-cache.xml.meta.json
 push_ips_state.json
+codec_cache.json

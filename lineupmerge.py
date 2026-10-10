@@ -160,11 +160,20 @@ def load_assignments(text):
     return {}
 
 
-def lineup_rows(rows, host, ts_port=5004):
-    """HDHR /lineup.json rows (core fields only; the facade adds codec/HD)."""
-    return [{"GuideNumber": r.gn, "GuideName": r.name, "Tags": "",
-             "URL": "http://%s:%d/auto/%s" % (host.split(":")[0], ts_port, r.key),
-             "Candidates": [c.m1 for c in r.candidates]} for r in rows]
+def lineup_rows(rows, host, ts_port=5004, codecs=None):
+    """HDHR /lineup.json rows (core fields; the facade adds HD). ``codecs`` is
+    an optional codeclearn.CodecCache: learned VideoCodec/AudioCodec are added
+    when every candidate M1 that learned a field agrees (never guessed)."""
+    out = []
+    for r in rows:
+        row = {"GuideNumber": r.gn, "GuideName": r.name, "Tags": "",
+               "URL": "http://%s:%d/auto/%s" % (host.split(":")[0], ts_port, r.key),
+               "Candidates": [c.m1 for c in r.candidates]}
+        if codecs is not None:
+            row.update(codecs.lookup_merged([c.m1 for c in r.candidates],
+                                            r.gn, r.name))
+        out.append(row)
+    return out
 
 
 def lineup_version(rows):

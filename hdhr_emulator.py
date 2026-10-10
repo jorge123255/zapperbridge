@@ -17,6 +17,7 @@ import hlstuner
 import epg as epgmod
 import ssdp as ssdpmod
 import lineup as lu
+import codeclearn
 import tspacer
 import zdiag
 import zstream
@@ -454,44 +455,47 @@ lineup_hash = lu.lineup_hash
 lineup_version = lu.lineup_version
 
 
-#: Measured codecs (ffprobe on the TS the facade serves), keyed by guide number,
-#: loaded from the checked-in codecs.json: {"2.1": {"VideoCodec": "MPEG2",
-#: "AudioCodec": "AC3", "GuideName": "CBS2-HD"}, ...}. An entry only applies
-#: when the row's GuideName matches (another market's 2.1 is not labelled). api8 rows carry no codec field. A guide number
-#: absent from the file (unmeasured, no data, 3.0/DRM, hls: row) omits both keys
-#: rather than guessing; a row may carry just one of the keys.
-CODECS_FILE = os.environ.get("HDHR_CODECS_FILE", os.path.join(HERE, "codecs.json"))
+#: VideoCodec/AudioCodec are learned passively from the PMT of streams clients
+#: actually tune (codeclearn.py) and cached per (M1 id, guide number, GuideName)
+#: in ZCODEC_CACHE (default: codec_cache.json next to the log, i.e. /data in
+#: Docker). api8 rows carry no codec field. A channel nobody has tuned yet (or
+#: 3.0/DRM, hls: rows) omits both keys rather than guessing; a row may carry
+#: just one of the keys. ZCODEC_LEARN=0 turns learning off (cache is still read).
+CODEC_CACHE_FILE = os.environ.get("ZCODEC_CACHE") or os.path.join(
+    os.path.dirname(os.environ["HDHR_LOG"]) if os.environ.get("HDHR_LOG") else HERE,
+    "codec_cache.json")
+CODEC_LEARN = os.environ.get("ZCODEC_LEARN", "1") != "0"
+CODECS = codeclearn.CodecCache(CODEC_CACHE_FILE)
 
 
-def load_measured_codecs(path=CODECS_FILE):
-    try:
-        with open(path) as fh:
-            d = json.load(fh)
-    except Exception:
-        return {}
-    ok = {}
-    for gn, v in (d.items() if isinstance(d, dict) else []):
-        if isinstance(v, dict):
-            e = {k: v[k] for k in ("VideoCodec", "AudioCodec")
-                 if isinstance(v.get(k), str) and v[k]}
-            if e:
-                e["GuideName"] = str(v.get("GuideName", ""))
-                ok[str(gn)] = e
-    return ok
-
-
-MEASURED_CODECS = load_measured_codecs()
+def _codec_eligible(r):
+    return not (proto_num(r.chan) != "1"
+                or str(r.chan.get("chan_id", "")).startswith("hls:")
+                or r.key != "v" + r.gn)
 
 
 def codec_fields(r):
-    """HDHomeRun-style VideoCodec/AudioCodec for a lu.rows() row, {} if unmeasured.
-    Only the primary row for a guide number (URL key v<GN>) and only ATSC 1.0."""
-    c = r.chan
-    if (proto_num(c) != "1" or str(c.get("chan_id", "")).startswith("hls:")
-            or r.key != "v" + r.gn or r.gn not in MEASURED_CODECS
-            or MEASURED_CODECS[r.gn]["GuideName"] != r.name):
+    """HDHomeRun-style VideoCodec/AudioCodec for a lu.rows() row, {} if not yet
+    learned. Only the primary row for a guide number (URL key v<GN>) and only
+    ATSC 1.0."""
+    if not _codec_eligible(r):
         return {}
-    return {k: v for k, v in MEASURED_CODECS[r.gn].items() if k != "GuideName"}
+    return CODECS.lookup(BRP_DEV, r.gn, r.name)
+
+
+def codec_learner_for(chans, ch):
+    """StreamLearner for the row serving ``ch`` (None when not applicable)."""
+    if not CODEC_LEARN:
+        return None
+    try:
+        for r in lu.rows(chans, XMLTV_PREFIX):
+            if r.chan is ch or r.chan.get("chan_id") == ch.get("chan_id"):
+                if not _codec_eligible(r):
+                    return None
+                return codeclearn.StreamLearner(CODECS, BRP_DEV, r.gn, r.name)
+    except Exception:
+        pass
+    return None
 
 
 #: Suffix on the /lineup.json ETag: LineupVersion/hash only cover number+name,
@@ -748,7 +752,8 @@ class Json(BaseHTTPRequestHandler):
             h = host.split(":")[0]
             return self._t(build_lineup_m3u(chans, h, host))
         if path == "/lineup.json":
-            etag = '"%s-%s"' % (lineup_hash(chans)[:16], LINEUP_JSON_SHAPE)
+            etag = '"%s-%s-%s"' % (lineup_hash(chans)[:16], LINEUP_JSON_SHAPE,
+                                   CODECS.token())
             if self.headers.get("If-None-Match") == etag:
                 self.send_response(304)
                 self.send_header("ETag", etag)
@@ -972,6 +977,8 @@ class Stream(BaseHTTPRequestHandler):
                 wg = zdiag.WriteGapMonitor(sess.chan_id)
             except Exception:
                 wg = None
+        #: passive codec learning (PMT of the stream being served anyway)
+        cl = getattr(self, "_clearn", None)
         #: diagnostics only: output TS analyzer / M1 input stats / capture
         zs = zstream.StreamDiag.create(sess, getattr(self, "_zseq", None),
                                        getattr(self, "_zguide", None))
@@ -980,6 +987,8 @@ class Stream(BaseHTTPRequestHandler):
             try:
                 for pkt in sess.packets():
                     pc.feed(pkt)
+                    if cl is not None and not cl.done:
+                        cl.feed(pkt)
                     if wg is not None:
                         wg.on_input(len(pkt))
                     if stop.is_set():
@@ -1053,7 +1062,10 @@ class Stream(BaseHTTPRequestHandler):
         zs = zstream.StreamDiag.create(sess, getattr(self, "_zseq", None),
                                        getattr(self, "_zguide", None))
         try:
+            cl = getattr(self, "_clearn", None)
             for pkt in sess.packets():
+                if cl is not None and not cl.done:
+                    cl.feed(pkt)
                 blk.append(pkt)
                 if len(blk) >= 7:
                     _out = b"".join(blk)
@@ -1302,6 +1314,7 @@ class Stream(BaseHTTPRequestHandler):
             self._zguide = zdiag.clean(num, 24) if zdiag.enabled() else None
             self._zlog_stream("stream request", ch["chan_id"])
             self._zlog_client(ch["chan_id"])
+            self._clearn = codec_learner_for(chans, ch)
             sess = tuner.tune(ch["chan_id"])
             if sess is not None:
                 sess.client_ip = self.client_address[0]

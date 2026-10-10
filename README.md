@@ -302,7 +302,8 @@ and writes it to `/Library/LaunchDaemons/`. Logs land in the repo directory
 - `tsinterleave.py` — merge per-PID TS packets by media time (A/V alignment)
 - `tspacer.py` — PCR-paced release + jitter buffer for the raw-TS stream
 - `ops/` — launchd install (macOS)
-- `docs/` — Docker, web UI, logging and lineup notes
+- `docs/` — Docker, web UI, logging, lineup and codec notes
+- Codec info (`VideoCodec`/`AudioCodec`) is learned per channel from streams you tune and cached locally; nothing is shipped. See [`docs/CODECS.md`](docs/CODECS.md).
 
 ## Limitations
 

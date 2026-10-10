@@ -26,7 +26,7 @@ RUN apt-get update \
  && mkdir -p /data /config && chown zapper /data
 
 WORKDIR /app
-COPY *.py codecs.json zapperbridge.example.toml /app/
+COPY *.py zapperbridge.example.toml /app/
 COPY ui /app/ui
 COPY docker/entrypoint.py docker/healthcheck.py /app/docker/
 COPY docs /app/docs
