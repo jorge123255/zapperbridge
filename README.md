@@ -285,6 +285,23 @@ Check a channel on your own box with `ffprobe` against
 - **Reporting a bug** — run `<image> check` and include its output plus a
   redacted log (remove IPs/IDs you care about) in a GitHub issue.
 
+## Kubernetes / k3s
+
+zapperbridge runs on Kubernetes, with limits. A pod normally has no LAN address of its own, and every virtual tuner needs its own IP for the M1 to push video to. So:
+
+- **`hostNetwork: true` gives you the node's IP only.** That means one push IP, so one tuner (`leases = 1`), per node. Pin the pod to that node with a `nodeSelector` on `kubernetes.io/hostname`.
+- **More tuners need more IPs.** Plain Kubernetes can't give pods their own LAN IPs. You need multus with macvlan or ipvlan, MetalLB or kube-vip, or extra IP aliases on the node. None of these are set up or tested here.
+- **The push IP must be reachable by the M1.** The M1 sends video to the IP you register, on TCP `:31061`. With `hostNetwork` that is the node IP, and it must be on the M1's LAN.
+- **Registering with an M1 uses its tuner slots**, and they stay taken while the pod is registered. Don't run a second bridge against the same M1 at the same time.
+- **Use arm64 or amd64 images to match your nodes.** The release workflow builds both amd64 and arm64. If you build it yourself on a different architecture, use `docker build --platform linux/arm64 .`. Without a registry, copy it to the node with `docker save`, then `k3s ctr images import`, and set `imagePullPolicy: Never`.
+- **Port 80 is probably taken on k3s.** The bundled Traefik/ServiceLB claims `:80` on every node, so a `hostNetwork` pod can bind it but never gets the traffic. Set `[network] http_port = 8080` (the example does) and point the probes at it. HDHomeRun clients that read the base URL from `discover.json` cope. Clients that assume `:80` may not.
+- Keep the web UI token in a Secret (`ZUI_TOKEN`), never in the ConfigMap. The config file goes in a ConfigMap mounted at `/config`.
+- Don't set `allowPrivilegeEscalation: false`. It disables the file capability that lets the non-root user bind low ports.
+
+A ready-to-edit Deployment, ConfigMap and Secret example is in [`docs/examples/k8s-hostnetwork.yaml`](docs/examples/k8s-hostnetwork.yaml). It uses `192.0.2.x` placeholders. Replace them with your M1's address and your node's IP.
+
+**What has been tested:** only a first stage on a k3s cluster of arm64 nodes: the image builds for arm64, starts as non-root on a `hostNetwork` pod, passes its `/healthz` probes, and serves the web UI with and without a token. It was pointed at an unreachable placeholder M1, so **nothing has been registered with a real M1 from Kubernetes yet**. With an unreachable M1, `discover.json` doesn't answer.
+
 ## Ops
 
 ```sh

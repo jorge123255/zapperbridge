@@ -1,0 +1,102 @@
+# zapperbridge on Kubernetes / k3s, hostNetwork variant (ONE tuner IP per node).
+# See the "Kubernetes / k3s" section of the README before applying this.
+#
+#   kubectl create namespace zapperbridge
+#   kubectl -n zapperbridge create secret generic zapperbridge-ui \
+#       --from-literal=ZUI_TOKEN="$(openssl rand -hex 16)"
+#   kubectl apply -f k8s-hostnetwork.yaml
+#
+# Replace 192.0.2.x placeholders with your own addresses. 192.0.2.0/24 is a
+# documentation range and will not work on a real network.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zapperbridge-config
+  namespace: zapperbridge
+data:
+  zapperbridge.toml: |
+    [[m1]]
+    name    = "m1"
+    address = "192.0.2.10"        # your ZapperBox's IP
+    leases  = 1                   # hostNetwork gives ONE push IP, so ONE tuner
+
+    [push]
+    # The M1 sends video to this IP on TCP :31061. With hostNetwork it must be
+    # the IP of the node the pod runs on, and the M1 must be able to reach it.
+    pool = ["192.0.2.212"]
+    check_free = false            # the node owns this IP; the image has no ping
+
+    [network]
+    mode = "host"
+    # k3s ships Traefik, whose ServiceLB claims :80 on every node, so a
+    # hostNetwork pod can bind :80 but never receives traffic there. Use 8080
+    # (or any free port). Clients that read BaseURL from discover.json cope
+    # with this; ones that assume :80 may not (see README).
+    http_port = 8080
+
+    [hdhr]
+    hls_tuner = false
+
+    [ui]
+    mode = "readonly"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zapperbridge
+  namespace: zapperbridge
+spec:
+  replicas: 1                     # never more than 1: ports 80/5004/31061 are per node
+  strategy:
+    type: Recreate                # old pod must release the host ports first
+  selector:
+    matchLabels: {app: zapperbridge}
+  template:
+    metadata:
+      labels: {app: zapperbridge}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: node3        # pin to the node whose IP is the push IP
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: zapperbridge
+          image: ghcr.io/jorge123255/zapperbridge:latest   # arm64 nodes need an arm64 image
+          # Image loaded by hand with `ctr images import` and not pulled? Use:
+          #   image: zapperbridge:k3s-test
+          #   imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
+          args: ["run"]
+          env:
+            - name: ZB_CONFIG
+              value: /config/zapperbridge.toml
+            - name: ZUI_TOKEN
+              valueFrom:
+                secretKeyRef: {name: zapperbridge-ui, key: ZUI_TOKEN}
+          securityContext:
+            # Do NOT set allowPrivilegeEscalation: false. It disables the file
+            # capability that lets uid 10001 bind :80.
+            capabilities:
+              drop: [ALL]
+              add: [NET_BIND_SERVICE]
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: config
+          configMap: {name: zapperbridge-config}
+        - name: data
+          emptyDir: {}            # use a PVC or hostPath to keep the codec cache
