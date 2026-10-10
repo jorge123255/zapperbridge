@@ -87,7 +87,18 @@ registered. It changes nothing and, by default, sends nothing.
   a push IP that is reserved/an M1, a real device's id, or an IP this host does
   not own. It never sends an api6 join (the facade's bootstrap joins each id
   when it starts), never api7. Config files and env cannot enable it. Tests use
-  a fake sender and block sockets; it has never been run against hardware.
+  a fake sender and block sockets.
+  **Status: not validated.** A first real attempt (from a Kubernetes node, new
+  device ID) sent the announce but the M1's api6 join still answered
+  `NOT_FOUND` every time (7 tries). Cause unconfirmed; don't rely on `--apply`.
+
+## SSDP (UPnP) announcements
+By default each facade announces itself on the LAN (UDP 1900 multicast) so
+HDHomeRun apps auto-discover it. That makes it show up as an extra HDHomeRun,
+so a bridge you start from a cluster node, a test container or a second host
+advertises a **second HDHomeRun on your LAN**. Turn it off with
+`[network] ssdp = false` or `ZB_SSDP=0`; apps then need the bridge's IP added
+by hand. Default is on (unchanged).
 
 ## Not done yet (reserved / open)
 * Live registration loop / re-announce cadence for many M1s in one container

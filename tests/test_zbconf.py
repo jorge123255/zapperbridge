@@ -508,3 +508,28 @@ class UiWiring(unittest.TestCase):
         _c, plan, errs, _w = build(c)
         (_n, env), = zbconf.launch_envs(plan)
         self.assertTrue(env["ZREQLOG"].endswith(".jsonl"), env["ZREQLOG"])
+
+
+class SsdpOption(unittest.TestCase):
+    def _env(self, c, env=None):
+        c = zbconf.apply_env(c, env=env or {})
+        _c, plan, errs, _w = zbconf.expand(c)
+        self.assertEqual(errs, [])
+        (_n, e), = zbconf.launch_envs(plan)
+        return e
+
+    def test_default_unchanged(self):
+        self.assertNotIn("HDHR_SSDP", self._env(one()))
+
+    def test_config_false_disables(self):
+        c = one()
+        c.setdefault("network", {})["ssdp"] = False
+        self.assertEqual(self._env(c)["HDHR_SSDP"], "0")
+
+    def test_env_off_disables_and_on_keeps(self):
+        self.assertEqual(self._env(one(), {"ZB_SSDP": "0"})["HDHR_SSDP"], "0")
+        self.assertEqual(self._env(one(), {"ZB_SSDP": "off"})["HDHR_SSDP"], "0")
+        self.assertNotIn("HDHR_SSDP", self._env(one(), {"ZB_SSDP": "1"}))
+        c = one()
+        c.setdefault("network", {})["ssdp"] = False
+        self.assertNotIn("HDHR_SSDP", self._env(c, {"ZB_SSDP": "true"}))

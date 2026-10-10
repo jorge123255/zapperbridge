@@ -300,7 +300,14 @@ zapperbridge runs on Kubernetes, with limits. A pod normally has no LAN address 
 
 A ready-to-edit Deployment, ConfigMap and Secret example is in [`docs/examples/k8s-hostnetwork.yaml`](docs/examples/k8s-hostnetwork.yaml). It uses `192.0.2.x` placeholders. Replace them with your M1's address and your node's IP.
 
-**What has been tested:** only a first stage on a k3s cluster of arm64 nodes: the image builds for arm64, starts as non-root on a `hostNetwork` pod, passes its `/healthz` probes, and serves the web UI with and without a token. It was pointed at an unreachable placeholder M1, so **nothing has been registered with a real M1 from Kubernetes yet**. With an unreachable M1, `discover.json` doesn't answer.
+**What has been tested:** only a first stage on a k3s cluster of arm64 nodes: the image builds for arm64, starts as non-root on a `hostNetwork` pod, passes its `/healthz` probes, and serves the web UI with and without a token. It was pointed at an unreachable placeholder M1.
+
+**Registration from a cluster node is UNTESTED, and the first real-hardware attempt failed.** A second stage ran `discover --apply` from a node against a real M1. The announce was sent, but the M1's `api6` join for the new device ID answered `NOT_FOUND` every time (7 tries), so the M1 never accepted the device. Earlier hand-run experiments from a Mac did register fresh IDs, so the method itself can work. The cause is not confirmed yet. **`discover --apply` has not been validated against real hardware**, so don't rely on it, and treat Kubernetes as "the image runs", not "tuning works".
+
+Other things to know:
+
+- **With an unreachable M1, `discover.json` doesn't answer** (it waits for the lineup), so a bridge whose M1 is down looks offline to apps. A shorter timeout is a planned follow-up.
+- **Announcing from a cluster node advertises a second HDHomeRun on your LAN.** SSDP (UPnP) announcements come from the node's IP, so apps can briefly see an extra device at the node's address. For test runs, turn them off with `[network] ssdp = false` (or `ZB_SSDP=0`); then add the bridge to apps by IP.
 
 ## Ops
 

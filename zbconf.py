@@ -65,6 +65,13 @@ def _as_list(v):
     return list(v)
 
 
+def _truthy(v):
+    """Config/env boolean: false for 0/false/no/off (any case) or False."""
+    if isinstance(v, str):
+        return v.strip().lower() not in ("0", "false", "no", "off")
+    return bool(v)
+
+
 def apply_env(cfg, env=None):
     """Overlay the small set of ZB_* overrides (compose-friendly)."""
     env = os.environ if env is None else env
@@ -89,6 +96,8 @@ def apply_env(cfg, env=None):
         cfg["push"]["device_seed"] = env["ZB_DEVICE_SEED"]
     if env.get("ZB_TUNER_CAP"):
         cfg["hdhr"]["tuner_cap"] = int(env["ZB_TUNER_CAP"])
+    if env.get("ZB_SSDP") not in (None, ""):
+        cfg["network"]["ssdp"] = env["ZB_SSDP"]
     if env.get("ZB_UI_MODE"):
         cfg["ui"]["mode"] = env["ZB_UI_MODE"]
     return cfg
@@ -350,6 +359,7 @@ def expand(cfg):
 
     extras = {
         "UI_MODE": uimode,
+        "SSDP": _truthy(net.get("ssdp", True)),
         "DISCOVERY_RESPONDER": bool(hd.get("discovery_responder", False)),
         "CHECKSUM_DEVICE_ID": bool(hd.get("checksum_device_id", False)),
         "REQLOG": bool(rl.get("enabled", False)),
@@ -396,6 +406,8 @@ def launch_envs(plan):
             env["ZREQLOG_MB"] = str(x["REQLOG_MB"])
         if x["DISCOVERY_RESPONDER"]:
             env["HDHR_DISCOVERY_RESPONDER"] = "1"
+        if not x["SSDP"]:                # default (on) leaves the facade's own default
+            env["HDHR_SSDP"] = "0"
         out.append((m["name"], env))
     return out
 

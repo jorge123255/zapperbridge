@@ -83,6 +83,10 @@ mode = "host"
 #                                 # use to reach the HDHR JSON/TS ports
 # http_port = 80                  # HDHR JSON (clients expect 80)
 # ts_port   = 5004
+# ssdp = true                     # UPnP/SSDP announcements (so apps auto-find the HDHR).
+#                                 # false (or ZB_SSDP=0) = stay silent; add it in apps by IP.
+#                                 # Use false for test runs on a node/host that is not
+#                                 # meant to show up as a second HDHomeRun on the LAN.
 
 # ---------------------------------------------------------------------------
 # 4. WHAT CLIENTS SEE (HDHomeRun fidelity)
