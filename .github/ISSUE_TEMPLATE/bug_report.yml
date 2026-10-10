@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Please redact private IPs/MACs you do not want public. Do **not** post
-        licence files, keys or anything from protected (A3SA/DRM) streams.
+        licence files, keys or recordings of copyrighted content.
   - type: textarea
     id: what
     attributes:

@@ -20,11 +20,14 @@ ZapperBox M1  ──BRP api6/api9──▶  this service  ──HDHR :80 JSON─
 > of SiliconDust; the name is used here only to describe API compatibility.
 > It is meant for hardware you own, on your own network.
 >
-> **No DRM circumvention.** Protected ATSC 3.0 (A3SA) channels are detected and
-> left alone: the bridge does not request, extract or use A3SA licences or
-> keys and does not decrypt protected streams. Encrypted channels are flagged
-> in the lineup and will not play. Use it only for content you are entitled to
-> watch, and keep the resulting streams to yourself.
+> **How protected content is handled.** The ZapperBox M1 does all tuning and
+> any decryption itself, and outputs an unencrypted transport stream.
+> zapperbridge only relays what the M1 delivers. It contains no DRM or
+> decryption code, does not request, extract or handle keys or licences, and
+> does not alter or remove any protection. Channels the M1 itself cannot
+> decrypt are simply unavailable (they are flagged in the lineup and will not
+> play). Use it only for content you are entitled to watch, and keep the
+> resulting streams to yourself. This is not legal advice.
 >
 > The M1's BRP protocol is reverse-engineered and can change with any firmware
 > update. Provided as-is, no warranty. **License:** MIT (see
@@ -273,8 +276,10 @@ Check a channel on your own box with `ffprobe` against
 - **How many tuners?** An M1 grants three concurrent BRP leases plus its own
   fixed HLS window. Multi-M1: usable = announced - 1 (only a 4-tuner announce is
   confirmed; others are `[unconfirmed]`).
-- **Protected channels won't play** — encrypted ATSC 3.0 (A3SA) services are
-  intentionally not decoded.
+- **Some channels won't play** — zapperbridge can only relay what the M1
+  outputs in the clear. Channels the M1 itself cannot decrypt (for example some
+  protected ATSC 3.0 services) are unavailable; the bridge has no decryption
+  code and does not try to work around this.
 - **Blank UI / `401`** — the UI is off unless `ui.mode = "readonly"`; with
   `ZUI_TOKEN` set, open `/ui?token=<token>` once.
 - **Reporting a bug** — run `<image> check` and include its output plus a
