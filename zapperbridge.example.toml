@@ -44,10 +44,14 @@
 # have reserved outside your router's DHCP range.
 pool = []                         # e.g. ["192.0.2.240-249"]
 #                                 # e.g. ["192.0.2.240", "192.0.2.241-243"]
-# device ids are derived from  prefix + sha1(seed|m1|slot),  so the same
-# config always yields the same ids. Change the seed for a second install on
-# the same LAN so ids never collide.
-device_seed   = "zapperbridge"
+# device ids are derived from  prefix + sha1(seed|m1|slot).  Leave device_seed
+# UNSET (recommended): on first run a random per-install seed is generated and
+# saved in the data dir (/data/seed, or $ZB_DATA_DIR/seed; mount /data as a
+# volume), and reused on every restart, so ids are stable and differ between
+# installs. The M1 remembers registered ids, so keep that file: deleting it
+# changes every device id. Setting device_seed (or ZB_DEVICE_SEED) overrides
+# the file; `check` shows where the seed came from.
+# device_seed = "choose-your-own"
 device_prefix = "02bb00"          # 2-8 hex digits
 # reserved_ips: addresses of REAL devices on your LAN that must never be used
 # as a push IP (validation rejects them). Nothing is built in -- this list is

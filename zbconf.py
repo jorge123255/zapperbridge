@@ -21,6 +21,7 @@ import hashlib
 import ipaddress
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -101,6 +102,121 @@ def apply_env(cfg, env=None):
     if env.get("ZB_UI_MODE"):
         cfg["ui"]["mode"] = env["ZB_UI_MODE"]
     return cfg
+
+
+#: Legacy fixed seed. Only used when no seed is configured AND none can be
+#: persisted (data dir not writable); every such install derives the same ids.
+LEGACY_SEED = "zapperbridge"
+SEED_FILE = "seed"
+
+
+def data_dir(env=None):
+    env = os.environ if env is None else env
+    return env.get("ZB_DATA_DIR") or "/data"
+
+
+def _read_seed(path):
+    """Seed text from `path`, or None if absent/empty/unreadable-as-text.
+    Any non-empty printable text is accepted verbatim (so a hand-written or
+    older seed keeps its ids); only empty / binary garbage counts as corrupt."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(1024)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError as e:
+        return None, "unreadable: %s" % e
+    try:
+        txt = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None, "corrupt (not text)"
+    if not txt or len(txt) > 256 or not txt.isprintable():
+        return None, "corrupt (empty or not printable)"
+    return txt, "ok"
+
+
+def _write_seed_atomic(path, seed):
+    """Create `path` with 0600, atomically, and never replace an existing
+    file: write a temp file then hard-link it into place (link fails if the
+    target exists, so a concurrent first run cannot clobber a seed)."""
+    d = os.path.dirname(path)
+    tmp = os.path.join(d, ".seed.%d.%s.tmp" % (os.getpid(),
+                                               secrets.token_hex(4)))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(seed + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            raise
+        except OSError:  # filesystem without hard links
+            if os.path.exists(path):
+                raise FileExistsError(path)
+            os.replace(tmp, path)
+            tmp = None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def resolve_seed(cfg, env=None, create=True):
+    """Pick the device-id seed. Returns (cfg, source_text).
+
+    1. an explicit push.device_seed / ZB_DEVICE_SEED always wins;
+    2. else <data dir>/seed (ZB_DATA_DIR, default /data), created once with a
+       random value on first run and never regenerated while present;
+    3. else (create=False and no file) a placeholder, or the legacy fixed
+       seed if the data dir cannot be written.
+    The seed itself is never put in the returned text."""
+    env = os.environ if env is None else env
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in cfg.items()}
+    push = cfg.setdefault("push", {})
+    if str(push.get("device_seed") or "").strip():
+        return cfg, "explicit device_seed (config / ZB_DEVICE_SEED)"
+    path = os.path.join(data_dir(env), SEED_FILE)
+    seed, why = _read_seed(path)
+    if seed is not None:
+        push["device_seed"] = seed
+        return cfg, "persisted seed file %s" % path
+    if not create:
+        push["device_seed"] = LEGACY_SEED
+        return cfg, ("PLACEHOLDER: no seed file at %s yet; a random one is "
+                     "created at first run, so these ids are NOT final" % path)
+    note = ""
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        if why.startswith(("corrupt", "unreadable")):
+            bad = path + ".bad"
+            try:
+                os.replace(path, bad)
+                note = " (previous file was %s; kept as %s, ids changed)" % (
+                    why, bad)
+            except OSError:
+                pass
+        new = secrets.token_hex(16)
+        try:
+            _write_seed_atomic(path, new)
+            push["device_seed"] = new
+            return cfg, "NEW random seed written to %s%s; keep this file" \
+                " (deleting it changes every device id)" % (path, note)
+        except FileExistsError:  # lost a race: use the winner's
+            seed, _ = _read_seed(path)
+            if seed is not None:
+                push["device_seed"] = seed
+                return cfg, "persisted seed file %s" % path
+            raise OSError("seed file appeared but is unreadable")
+    except OSError as e:
+        push["device_seed"] = LEGACY_SEED
+        return cfg, ("FALLBACK legacy fixed seed: cannot persist a seed in %s "
+                     "(%s). Mount a writable /data (or set ZB_DATA_DIR / "
+                     "device_seed); installs sharing this fallback derive the "
+                     "SAME device ids" % (os.path.dirname(path), e))
 
 
 def parse_pool(entries):
@@ -213,7 +329,7 @@ def expand(cfg):
                     % ", ".join(hit))
         pool = [ip for ip in pool if ip not in never_ips]
 
-    seed = str(push.get("device_seed", "zapperbridge"))
+    seed = str(push.get("device_seed") or LEGACY_SEED)
     prefix = push.get("device_prefix", DEFAULT_DEV_PREFIX)
     try:
         derive_dev(prefix, seed, "x", 0)
@@ -512,6 +628,8 @@ def render_plan(plan, errs, warns):
     if plan.get("reserved_ips"):
         L.append("reserved (never push IPs): %s" % ", ".join(
             plan["reserved_ips"]))
+    if plan.get("seed_source"):
+        L.append("device id seed: %s" % plan["seed_source"])
     L.append("network mode: %s | advertised TunerCount total: %d" % (
         plan["mode"], plan["tuners_total"]))
     if plan.get("merged"):

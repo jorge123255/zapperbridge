@@ -17,7 +17,25 @@ entrypoint (`docker/entrypoint.py`).
 * One virtual HDHomeRun per M1 (`hdhr.mode = "per-m1"`, works today).
 * Each M1 gets its own block of up to 3 device ids and push IPs; a tuner is an
   (M1, device id, push IP) triple. Ids are `device_prefix + sha1(seed|m1|slot)`,
-  stable across restarts. Push IPs come from `push.pool` in order, or are
+  stable across restarts. Unless you set `device_seed` / `ZB_DEVICE_SEED`, the
+  seed is random per install: created on first run in `/data/seed`
+  (`ZB_DATA_DIR`), written atomically with mode 0600 and never regenerated while
+  present. Mount `/data` as a volume and keep the file: deleting it changes
+  every device id (the M1 remembers ids). `check` prints where the seed came
+  from. If `/data` is not writable the bridge falls back to a fixed legacy seed
+  and says so loudly (ids then match every other such install).
+
+## When the M1 is not reachable
+* `/healthz` and `/discover.json` always answer at once (no M1 needed).
+* `/lineup_status.json`, `/lineup.json`, `/lineup.m3u` and the playlists wait
+  at most `HDHR_LINEUP_TIMEOUT` (3 s) for the M1, then answer from the cached
+  lineup, else an empty list; the `X-Zapperbridge-Lineup` header says why.
+* With `ZM1=auto` (the default when no address is set) the container no longer
+  exits: it serves HTTP, logs "still waiting" with a hint every ~30 s, and
+  starts normal operation (guide, SSDP, tuning) as soon as the M1's announce is
+  heard, no restart needed. In a Docker bridge network that announce never
+  arrives: use host/macvlan networking, or set the address (`ZB_M1=<ip>` /
+  `[[m1]] address`; `ZM1=<ip>` for the bare facade). Push IPs come from `push.pool` in order, or are
   pinned per M1 with `push_ips`.
 * Advertised TunerCount per M1 = leases (+1 fixed HLS window); `hdhr.tuner_cap`
   caps the total across M1s.

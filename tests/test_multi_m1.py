@@ -467,10 +467,10 @@ def test_review_duplicate_m1_ip_flagged():
 def test_review_brptune_m1_only_via_env_note():
     here = os.path.dirname(HERE)
     src = open(os.path.join(here, "hdhr_emulator.py")).read()
-    body = src.split("def resolve_m1_at_start", 1)[1].split("\nif __name__", 1)[0]
-    assert "brptune.M1 is set ONLY via this env var" in body
+    body = src.split("def _apply_m1", 1)[1].split("\ndef start_m1_discovery", 1)[0]
+    assert "brptune/hlstuner read ZM1 from the env" in body
     # no top-level `import brptune` in the facade (lazy import is what makes
-    # the env export in resolve_m1_at_start take effect before brptune reads ZM1)
+    # the env export in _apply_m1 take effect before brptune reads ZM1)
     for line in src.splitlines():
         assert line.strip() != "import brptune" or line.startswith((" ", "\t")), line
 

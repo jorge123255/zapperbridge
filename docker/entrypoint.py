@@ -53,7 +53,11 @@ def main(argv):
     else:
         print("note: %s not found; using defaults + ZB_* env" % path)
     cfg = zbconf.apply_env(cfg)
+    # Per-install device-id seed: explicit one wins, else a random seed is
+    # created once in the data dir and reused on every restart.
+    cfg, seed_source = zbconf.resolve_seed(cfg)
     _core, plan, errs, warns = zbconf.expand(cfg)
+    plan["seed_source"] = seed_source
     print(zbconf.render_plan(plan, errs, warns), flush=True)
     if errs:
         print("config invalid: refusing to start", file=sys.stderr)

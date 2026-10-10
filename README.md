@@ -119,7 +119,9 @@ Or load the whole playlist: `http://<this-host>:5004/playlist.m3u` (or
 `http://<this-host>/lineup.m3u` with guide ids). Both are built live from your
 own M1's channel list. 
 Don't know the M1's IP? `ZM1=auto` finds it from the M1's own broadcast on
-UDP 31064 (passive listen, up to `ZM1_DISCOVER_WAIT` s). With several M1s on
+UDP 31064 (passive listen). It keeps listening in the background until an M1
+is heard: the bridge serves HTTP meanwhile (`/healthz` OK, empty lineup) and
+logs a hint every ~30 s. With several M1s on
 the LAN, use `ZM1=auto:<m1 device id>`. `python3 m1disco.py 90` lists what it
 hears. For several M1s see [`docs/DOCKER.md`](docs/DOCKER.md)
 and `python3 m1config.py <config.json>`.
@@ -155,7 +157,9 @@ documentation range `192.0.2.0/24`.
 | `HDHR_TS_DIRECT` | unset | unset = 302 redirect to `:5004`; `1` = serve TS directly from the JSON port too |
 | `HDHR_BRP_DEV` | `02bb00000001` | device id used for the BRP join |
 | `ZM1` | `auto` | M1 IP, or `auto` / `auto:<m1 dev id or ip>` (BRzb discovery) |
-| `ZM1_DISCOVER_WAIT` | `75` | seconds to listen for the M1 announce when `ZM1=auto` |
+| `ZM1_DISCOVER_LOG_SEC` | `30` | seconds between "still waiting for an M1" log lines when `ZM1=auto` (discovery never gives up) |
+| `HDHR_LINEUP_TIMEOUT` | `3.0` | seconds the lineup endpoints wait for the M1 before answering from the cached lineup (or `[]`) |
+| `ZB_DATA_DIR` | `/data` | where the per-install device-id `seed` file lives |
 | `HDHR_DEVICE_ID` | `02BB0001` | HDHR DeviceID (one per M1 when serving several) |
 | `HDHR_FRIENDLY` | `ZapperBox M1 (emulated)` | FriendlyName |
 | `ZEPG_ID_PREFIX` | empty | XMLTV id namespace (`zb-<prefix>-<GN>`) for side-by-side M1s |
@@ -250,7 +254,9 @@ Check a channel on your own box with `ffprobe` against
 - **`NOT_SHARED` / nothing tunes** — turn *sharing* on for the M1 in the Zapper app.
 - **"M1 not found" / `auto` times out** — the M1 must be on the same subnet
   (UDP 31064 broadcast does not cross routers/VLANs). Set the address explicitly
-  (`address = "<M1 IP>"`) or raise `ZM1_DISCOVER_WAIT`. Run
+  (`address = "<M1 IP>"` / `ZB_M1=<M1 IP>`); auto-discovery keeps waiting and
+  logs why every ~30 s. In Docker it needs host or macvlan networking (a bridge
+  network never sees the M1's broadcast). Run
   `<image> discover --listen 60` to see what is heard.
 - **Port 80 busy** — another web server owns `:80`. Stop it, or set
   `[network] http_port = 8080` (some HDHR clients only look on 80).
@@ -271,7 +277,11 @@ Check a channel on your own box with `ffprobe` against
 - **Wi-Fi + macvlan fails** — most Wi-Fi NICs drop macvlan frames; use ipvlan L2
   or a wired host.
 - **One M1 = one set of device IDs** — each M1 gets its own IDs/push IPs derived
-  from `device_seed`; do not reuse a seed on two installs on one LAN. Never
+  from a seed. By default each install generates its own random seed on first
+  run and keeps it in `/data/seed` (mount `/data`, or the ids change when the
+  container is recreated). **Deleting that file changes every device id**, and
+  the M1 remembers ids. Set `device_seed` / `ZB_DEVICE_SEED` to pin your own.
+  Never
   reuse a real Mini's device ID.
 - **How many tuners?** An M1 grants three concurrent BRP leases plus its own
   fixed HLS window. Multi-M1: usable = announced - 1 (only a 4-tuner announce is

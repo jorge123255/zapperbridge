@@ -43,7 +43,7 @@ services:
       # ZB_PUSH_POOL: "192.0.2.240-249"
       # ZB_NETWORK_MODE: host
       # ZB_ADVERTISE_IP: "192.0.2.60"
-      # ZB_DEVICE_SEED: zapperbridge
+      # ZB_DEVICE_SEED: ""   # leave unset: a random per-install seed is kept in /data/seed (mount a volume on /data)
       # ZB_TUNER_CAP: "4"
       # ZB_UI_MODE: readonly                   # off (default) | readonly
       # ZUI_TOKEN: "change-me-20-random-chars" # optional UI token (>= 8 chars)

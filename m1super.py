@@ -252,10 +252,15 @@ def announce_preview(plan):
     return out
 
 
-def build_plan(cfg, found=(), sweep_ips=(), env=None):
-    """(plan dict, errors, warnings, notes, merged cfg). Pure."""
+def build_plan(cfg, found=(), sweep_ips=(), env=None, create_seed=False):
+    """(plan dict, errors, warnings, notes, merged cfg). Pure unless
+    create_seed (only --apply): then a missing per-install seed file is
+    created so the announced ids match what `run` will use."""
     cfg2, notes = merge_config(cfg, list(found), sweep_ips)
-    _core, plan, errs, warns = zbconf.expand(zbconf.apply_env(cfg2, env=env or {}))
+    cfg3 = zbconf.apply_env(cfg2, env=env or {})
+    cfg3, seed_source = zbconf.resolve_seed(cfg3, env=env, create=create_seed)
+    _core, plan, errs, warns = zbconf.expand(cfg3)
+    plan["seed_source"] = seed_source
     for m in plan["m1s"]:
         if m["m1"].lower().startswith("auto") and not any(
                 f.kind == "m1" for f in found):
@@ -384,7 +389,8 @@ def main(argv=None, out=print):
         except zbconf.ConfigError as e:
             out("ERROR %s" % e)
             return 2
-    plan, errs, warns, notes, _cfg2 = build_plan(cfg, found, sweep_ips)
+    plan, errs, warns, notes, _cfg2 = build_plan(cfg, found, sweep_ips,
+                                                  create_seed=a.apply)
     if a.json:
         out(json.dumps({"found": [f.as_dict() for f in found], "notes": notes,
                         "errors": errs, "warnings": warns, "plan": plan,

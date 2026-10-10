@@ -32,6 +32,12 @@ M1 = M1_SPEC
 _m1_info = {"spec": M1_SPEC, "dev": None,
             "source": "auto-pending" if M1_SPEC.lower().startswith("auto")
             else "configured"}
+#: Set once the M1 address is known. With ZM1=auto the HTTP servers start
+#: first and a background loop (start_m1_discovery) sets this when an announce
+#: is heard; until then every M1-touching path answers fast without any I/O.
+_m1_ready = threading.Event()
+if not M1_SPEC.lower().startswith("auto"):
+    _m1_ready.set()
 EMU_ID = "e2c799f80007"
 #: 8-hex HDHR-style id. One per virtual HDHR (i.e. per M1) when several M1s
 #: are served; the default is a placeholder id.
@@ -85,6 +91,8 @@ HB_SEC = float(os.environ.get("HDHR_HB_SEC", "2"))
 
 
 def brp_call(api, a0=3, a1=0, a3=0, payload=b"", len2=None, timeout=8.0):
+    if not _m1_ready.is_set():
+        raise RuntimeError("M1 not discovered yet")
     _seq[0] = (_seq[0] + 1) & 0xFFFF
     if len2 is None:
         len2 = len(payload) + 1 if payload else 0
@@ -120,6 +128,8 @@ def start_heartbeat():
 
 
 def _lineup_raw(force=False):
+    if not _m1_ready.is_set():
+        raise RuntimeError("M1 not discovered yet")
     if not force and time.time() - _cache["at"] < 300 and _cache["channels"]:
         return _cache["channels"]
     try:
@@ -192,6 +202,77 @@ def get_lineup(force=False):
     return chans + [HLS_CHANNEL]
 
 
+#: Seconds the lineup-dependent JSON endpoints wait for the M1 before they
+#: answer from the cached lineup (or []). /discover.json never waits.
+LINEUP_TIMEOUT = float(os.environ.get("HDHR_LINEUP_TIMEOUT", "3.0"))
+_lu_flight = {"lock": threading.Lock(), "ev": None, "box": None}
+_lu_note = {"at": 0.0}
+
+
+def cached_lineup():
+    """Last known lineup (memory, else a cache file for THIS M1) plus the HLS
+    row, or None. Never touches the network or _brp_lock."""
+    if not _m1_ready.is_set():
+        return None
+    chans = _cache["channels"]
+    if not chans:
+        for path in LINEUP_CACHE_FILES:
+            chans = load_lineup_cache(path, M1)
+            if chans:
+                break
+    if not chans:
+        return None
+    return chans + [HLS_CHANNEL] if HLS_TUNER else chans
+
+
+def _lineup_flight(force):
+    """One background fetch at a time (get_lineup can block for tens of
+    seconds on a dead M1 and holds _brp_lock); callers wait on it with a
+    timeout instead of holding the lock themselves."""
+    with _lu_flight["lock"]:
+        ev = _lu_flight["ev"]
+        if ev is None or ev.is_set():
+            ev, box = threading.Event(), {}
+
+            def work():
+                try:
+                    box["chans"] = get_lineup(force)
+                except Exception as e:
+                    box["err"] = e
+                finally:
+                    ev.set()
+            _lu_flight.update(ev=ev, box=box)
+            threading.Thread(target=work, daemon=True,
+                             name="lineup-fetch").start()
+        return _lu_flight["ev"], _lu_flight["box"]
+
+
+def get_lineup_bounded(force=False, timeout=None):
+    """(channels or None, reason or None). Healthy M1 / fresh cache: exactly
+    get_lineup(). Otherwise waits at most `timeout` s, then returns the
+    cached lineup, or (None, why) if there is none. Never raises, never
+    blocks past the timeout."""
+    timeout = LINEUP_TIMEOUT if timeout is None else timeout
+    if not _m1_ready.is_set():
+        return None, "M1 not discovered yet"
+    if not force and time.time() - _cache["at"] < 300 and _cache["channels"]:
+        return get_lineup(), None  # in-memory, no I/O
+    ev, box = _lineup_flight(force)
+    ev.wait(timeout)
+    if ev.is_set() and "chans" in box:
+        return box["chans"], None
+    why = ("M1 unreachable or lineup fetch failed" if ev.is_set()
+           else "M1 slow (>%.1fs)" % timeout)
+    stale = cached_lineup()
+    if stale:
+        why += "; serving cached lineup"
+    if time.time() - _lu_note["at"] > 30:
+        _lu_note["at"] = time.time()
+        print("lineup: %s%s" % (why, "" if stale else "; no cache, serving []"),
+              flush=True)
+    return stale, why
+
+
 def abs_uri(host, base_path, uri):
     name = uri.split("?", 1)[0].rstrip("/").split("/")[-1]
     if name.endswith(".m3u8"):
@@ -210,6 +291,10 @@ _brp_tuner = None
 
 def get_brp_tuner():
     global _brp_tuner
+    if not _m1_ready.is_set():
+        # brptune reads ZM1 at import: importing it while ZM1 is still "auto"
+        # would pin it to the literal host "auto" for good.
+        raise RuntimeError("M1 not discovered yet")
     if _brp_tuner is None:
         import brptune
         _brp_tuner = brptune.Tuner(devs=BRP_DEVS)
@@ -620,23 +705,27 @@ def _epg_lineup_watch(interval=EPG_WATCH):
 
 
 class Json(BaseHTTPRequestHandler):
-    def _j(self, obj, code=200):
+    def _j(self, obj, code=200, headers=None):
         b = json.dumps(obj).encode()
         try:
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(b)
         except (BrokenPipeError, ConnectionResetError):
             pass  # client went away mid-response; nothing to report
 
-    def _t(self, text, ctype="application/x-mpegurl", code=200):
+    def _t(self, text, ctype="application/x-mpegurl", code=200, headers=None):
         b = text.encode()
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(b)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(b)
         except (BrokenPipeError, ConnectionResetError):
@@ -649,11 +738,9 @@ class Json(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _health(self):
-        try:
-            chans = get_lineup()
-            nrows = len(visible(chans))
-        except Exception:
-            chans, nrows = [], 0
+        chans, _why = get_lineup_bounded()
+        chans = chans or []
+        nrows = len(visible(chans)) if chans else 0
         now = time.time()
         api8_ok = _api8["ok_at"] > 0 and _api8["ok_at"] >= _api8["fail_at"]
         t = _brp_tuner.health() if _brp_tuner is not None else None
@@ -724,12 +811,14 @@ class Json(BaseHTTPRequestHandler):
             return self._t(device_xml(), "text/xml; charset=utf-8")
         if path in ("/epg.xml", "/xmltv.xml"):
             return self._epg()
-        try:
-            chans = get_lineup(force="tuning" in self.path)
-        except Exception as e:
-            return self._j({"error": str(e)}, 502)
-
         if path == "/discover.json":
+            # Static answer: needs no lineup and never waits on the M1. The
+            # version comes from the cached lineup if there is one; otherwise
+            # a background fetch is started so a later poll sees the real one.
+            chans = cached_lineup()
+            if chans is None and _m1_ready.is_set():
+                _lineup_flight(False)
+            chans = chans or []
             return self._j({
                 "FriendlyName": FRIENDLY,
                 "Manufacturer": "BitRouter",
@@ -744,13 +833,32 @@ class Json(BaseHTTPRequestHandler):
                 "LineupVersion": lineup_version(chans),
                 "TunerCount": TUNER_COUNT,
             })
+        if path not in _LINEUP_PATHS:
+            if path == "/tuners.json":
+                return self._j(tuner_status_rows())
+            return self._j({"error": "not found"}, 404)
+        chans, why = get_lineup_bounded(force="tuning" in self.path)
+        hdr = {}
+        if chans is None and path in ("/lineup_status.json", "/lineup.json",
+                                      "/lineup.m3u") + PLAYLIST_PATHS:
+            # M1 unreachable and nothing cached: answer, never hang.
+            chans = []
+            hdr = {"X-Zapperbridge-Lineup": "unavailable: %s" % why,
+                   "Cache-Control": "no-store"}
+        elif chans is None:
+            return self._j({"error": why}, 502)
+        elif why:
+            hdr = {"X-Zapperbridge-Lineup": "stale: %s" % why}
         if path == "/lineup_status.json":
             return self._j({"ScanInProgress": 0, "ScanPossible": 1,
                             "Source": "Cable", "SourceList": ["Cable"],
-                            "LineupVersion": lineup_version(chans)})
+                            "LineupVersion": lineup_version(chans)},
+                           headers=hdr)
         if path == "/lineup.m3u":
             h = host.split(":")[0]
-            return self._t(build_lineup_m3u(chans, h, host))
+            return self._t(build_lineup_m3u(chans, h, host), headers=hdr)
+        if path == "/lineup.json" and hdr:
+            return self._j(lineup_rows(chans, host), headers=hdr)
         if path == "/lineup.json":
             etag = '"%s-%s-%s"' % (lineup_hash(chans)[:16], LINEUP_JSON_SHAPE,
                                    CODECS.token())
@@ -768,7 +876,8 @@ class Json(BaseHTTPRequestHandler):
             self.wfile.write(b)
             return
         if path in PLAYLIST_PATHS:
-            return self._t(build_m3u(chans, host.split(":")[0]))
+            return self._t(build_m3u(chans, host.split(":")[0]),
+                           headers=hdr)
         if path == "/tuners.json":
             return self._j(tuner_status_rows())
         if path == "/status.json":
@@ -781,6 +890,9 @@ class Json(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
 PLAYLIST_PATHS = ("/playlist.m3u", "/playlist.m3u8", "/channels.m3u")
+#: Paths whose answer is built from the lineup (everything else needs none).
+_LINEUP_PATHS = ("/lineup_status.json", "/lineup.json", "/lineup.m3u",
+                 "/status.json", "/tuners") + PLAYLIST_PATHS
 
 def build_m3u(chans, ip, port=None):
     """M3U of the lineup; stream URLs point at the TS port."""
@@ -1268,11 +1380,8 @@ class Stream(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path in PLAYLIST_PATHS:
-            try:
-                chans = get_lineup()
-            except Exception:
-                chans = []
-            body = build_m3u(chans, self._host(), TS_PORT).encode()
+            chans, _why = get_lineup_bounded()
+            body = build_m3u(chans or [], self._host(), TS_PORT).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/x-mpegurl")
             self.send_header("Content-Length", str(len(body)))
@@ -1287,6 +1396,8 @@ class Stream(BaseHTTPRequestHandler):
                 self.send_error(404, "bad hls path")
             return
         num = path.split("/auto/", 1)[-1] if "/auto/" in path else ""
+        if not _m1_ready.is_set():
+            return self.send_error(503, "M1 not discovered yet")
         try:
             chans = get_lineup()
         except Exception:
@@ -1439,45 +1550,80 @@ def _ts_serve(srv):
     except Exception as e:
         print("TS server died: %r" % (e,), flush=True)
 
-def resolve_m1_at_start():
-    """ZM1=auto[:dev|ip]: find the M1 from its own announce before anything
-    talks BRP. brptune/hlstuner read ZM1 from the env, so export the IP."""
+#: Seconds between "still waiting for an M1" log lines while auto-discovering.
+DISCOVER_LOG_SEC = float(os.environ.get("ZM1_DISCOVER_LOG_SEC", "30"))
+DISCOVER_HINT = (
+    "auto-discovery listens for the M1's UDP 31064 broadcast, which does not "
+    "reach a Docker bridge network or another subnet/VLAN: use host or macvlan "
+    "networking, or skip discovery by setting the M1 address (ZM1=<ip> for "
+    "the bare facade, ZB_M1=<ip> or [[m1]] address = \"<ip>\" in the config)")
+
+
+def _apply_m1(ip, dev, why):
+    """Adopt the discovered M1. brptune/hlstuner read ZM1 from the env (brptune
+    is imported lazily, only after _m1_ready is set: do not add a top-level
+    `import brptune`, it would read ZM1 while it is still "auto")."""
     global M1
-    if not M1_SPEC.lower().startswith("auto"):
-        return
-    import m1disco
-    wait = float(os.environ.get("ZM1_DISCOVER_WAIT", "75"))
-    ip, dev, why = m1disco.resolve_m1(M1_SPEC, wait=wait)
-    print("m1 auto-discovery (%s): %s dev=%s (%s)" % (M1_SPEC, ip, dev, why),
-          flush=True)
-    if not ip:
-        raise SystemExit("ZM1=%s: %s" % (M1_SPEC, why))
     M1 = ip
-    # brptune.M1 is set ONLY via this env var: brptune is imported lazily
-    # (get_brp_tuner), after this runs. Do not add a top-level
-    # `import brptune` -- it would read ZM1 while it is still "auto" and
-    # send BRP to the literal host "auto".
     os.environ["ZM1"] = ip
     hlstuner.M1 = ip
     EPG.owner = ip
     if EPG.xml is None:
         EPG._load_disk()
     _m1_info.update(dev=dev, source="auto: %s" % why)
+    _m1_ready.set()
 
 
-if __name__ == "__main__":
-    import threading
-    if os.environ.get("HDHR_DAEMON") == "1":
-        daemonize()
-    resolve_m1_at_start()
-    webui.init()
-    try:
-        ts_srv = ThreadingHTTPServer(("0.0.0.0", TS_PORT), Stream)
-    except OSError as e:
-        print("TS bind fail :%d %r" % (TS_PORT, e), flush=True)
-        raise SystemExit(1)
-    t = threading.Thread(target=_ts_serve, args=(ts_srv,), daemon=True)
-    t.start()
+def start_m1_discovery(on_found, log_every=None, resolver=None, sleep=time.sleep):
+    """ZM1=auto[:dev|ip]: find the M1 from its own announce in the background,
+    forever, while the HTTP side is already serving (/healthz OK, empty
+    lineup). Calls on_found() once, after the M1 is adopted. Returns the
+    thread, or None if the M1 address is literal / already known."""
+    if _m1_ready.is_set():
+        return None
+    log_every = DISCOVER_LOG_SEC if log_every is None else log_every
+    import m1disco
+    resolver = resolver or m1disco.resolve_m1
+
+    def loop():
+        lst = None
+        try:
+            lst = m1disco.Listener().start()
+        except Exception as e:
+            print("m1 auto-discovery: cannot listen on UDP %d (%s)" % (
+                m1disco.PORT, e), flush=True)
+        t0 = time.time()
+        while not _m1_ready.is_set():
+            try:
+                kw = {"listener": lst} if lst is not None else {}
+                ip, dev, why = resolver(M1_SPEC, wait=max(log_every, 1.0), **kw)
+            except Exception as e:
+                ip, dev, why = None, None, "error: %r" % (e,)
+            if ip:
+                print("m1 auto-discovery (%s): %s dev=%s (%s)" % (
+                    M1_SPEC, ip, dev, why), flush=True)
+                _apply_m1(ip, dev, why)
+                if lst is not None:
+                    lst.shutdown()
+                try:
+                    on_found()
+                except Exception as e:
+                    print("post-discovery start error: %r" % (e,), flush=True)
+                return
+            print("m1 auto-discovery (%s): still waiting after %ds (%s); %s. "
+                  "Serving /healthz and an empty lineup meanwhile." % (
+                      M1_SPEC, int(time.time() - t0), why, DISCOVER_HINT),
+                  flush=True)
+            if why.startswith("ambig"):
+                sleep(log_every)  # pick_m1 returns at once; do not spin
+    th = threading.Thread(target=loop, daemon=True, name="m1-discovery")
+    th.start()
+    return th
+
+
+def _after_m1_ready():
+    """Everything that needs the M1 address: guide builder and SSDP."""
+    global ADVERTISE_IP
     if os.environ.get("ZEPG", "1") == "1":
         EPG.start_background(build_epg)
         _epg_lineup_watch()
@@ -1496,6 +1642,25 @@ if __name__ == "__main__":
                   "has no LAN multicast; HDHomeRun apps can still be added by "
                   "IP, or use host/macvlan networking for auto-discovery."
                   % (e,), flush=True)
+
+
+if __name__ == "__main__":
+    if os.environ.get("HDHR_DAEMON") == "1":
+        daemonize()
+    webui.init()
+    try:
+        ts_srv = ThreadingHTTPServer(("0.0.0.0", TS_PORT), Stream)
+    except OSError as e:
+        print("TS bind fail :%d %r" % (TS_PORT, e), flush=True)
+        raise SystemExit(1)
+    t = threading.Thread(target=_ts_serve, args=(ts_srv,), daemon=True)
+    t.start()
+    if _m1_ready.is_set():
+        _after_m1_ready()
+    else:
+        print("m1 auto-discovery (%s): waiting for the M1 in the background; "
+              "serving now. %s" % (M1_SPEC, DISCOVER_HINT), flush=True)
+        start_m1_discovery(_after_m1_ready)
 
     def _bye(signum, frame):
         print("signal %d: shutting down" % signum, flush=True)
