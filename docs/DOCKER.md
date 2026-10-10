@@ -30,7 +30,7 @@ entrypoint (`docker/entrypoint.py`).
 * `/lineup_status.json`, `/lineup.json`, `/lineup.m3u` and the playlists wait
   at most `HDHR_LINEUP_TIMEOUT` (3 s) for the M1, then answer from the cached
   lineup, else an empty list; the `X-Zapperbridge-Lineup` header says why.
-* With `ZM1=auto` (the default when no address is set) the container no longer
+* With `ZB_M1=auto` (the default when no address is set; `ZM1=auto` on the bare facade) the container no longer
   exits: it serves HTTP, logs "still waiting" with a hint every ~30 s, and
   starts normal operation (guide, SSDP, tuning) as soon as the M1's announce is
   heard, no restart needed. In a Docker bridge network that announce never

@@ -118,11 +118,11 @@ Then in VLC: **Media → Open Network Stream** →
 Or load the whole playlist: `http://<this-host>:5004/playlist.m3u` (or
 `http://<this-host>/lineup.m3u` with guide ids). Both are built live from your
 own M1's channel list. 
-Don't know the M1's IP? `ZM1=auto` finds it from the M1's own broadcast on
+Don't know the M1's IP? (Native: `ZM1=auto`; Docker: `ZB_M1=auto`, or set no address.) It finds it from the M1's own broadcast on
 UDP 31064 (passive listen). It keeps listening in the background until an M1
 is heard: the bridge serves HTTP meanwhile (`/healthz` OK, empty lineup) and
 logs a hint every ~30 s. With several M1s on
-the LAN, use `ZM1=auto:<m1 device id>`. `python3 m1disco.py 90` lists what it
+the LAN, use `ZM1=auto:<m1 device id>` (Docker: `ZB_M1=auto:<m1 device id>`). `python3 m1disco.py 90` lists what it
 hears. For several M1s see [`docs/DOCKER.md`](docs/DOCKER.md)
 and `python3 m1config.py <config.json>`.
 
@@ -142,6 +142,13 @@ and `python3 m1config.py <config.json>`.
 
 All knobs are environment variables. `ZM1` defaults to `auto` (discovery); the example addresses below use the
 documentation range `192.0.2.0/24`.
+
+> **Docker vs native.** Docker users set the M1 with `ZB_M1=<ip|auto|auto:<id>>` or
+> `[[m1]] address = "<ip>"` in the config; the container then sets `ZM1` for each
+> facade itself, so a `ZM1=` you pass to the container is ignored. `ZM1` is the knob
+> for the bare native facade (`python3 hdhr_emulator.py`). Other `ZM1_*` tuning knobs
+> such as `ZM1_DISCOVER_LOG_SEC` are plain environment variables that the container
+> passes through to the facade, so they work in Docker too.
 
 ### `hdhr_emulator.py`
 
