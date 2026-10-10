@@ -72,7 +72,12 @@ def test_outputs_byte_identical_to_main():
     with open(os.path.join(FIX, "golden-market-a-86.json")) as fh:
         g = json.load(fh)
     c = with_hls(chans("api8-market-a-86.json"))
-    assert json.dumps(h.lineup_rows(c, HOST)) == g["lineup_json"]
+    # codec fields are learned at runtime now (no shipped codec table), so the
+    # golden's VideoCodec/AudioCodec keys are not part of the static output.
+    golden_rows = [{k: v for k, v in r.items()
+                    if k not in ("VideoCodec", "AudioCodec")}
+                   for r in json.loads(g["lineup_json"])]
+    assert h.lineup_rows(c, HOST) == golden_rows
     assert h.build_lineup_m3u(c, HOST, HOST) == g["lineup_m3u"]
     assert h.build_m3u(c, HOST) == g["playlist_m3u"]
     assert h.build_xmltv_for(c, fake_fetch)[0] == g["xmltv"]
@@ -299,7 +304,8 @@ def test_example_config_reproduces_live_launch():
                                 "192.0.2.242,02bb00000003=192.0.2.243")
     assert env["HDHR_DEVICE_ID"] == "02BB0001" and env["HDHR_TUNERS"] == "4"
     assert env["ZM1"] == "192.0.2.10" and env["HDHR_HLS_TUNER"] == "1"
-    assert env["HDHR_BRP_DEVS"] == env["ZDEVS"] == ",".join(h.BRP_DEVS)
+    assert env["HDHR_BRP_DEVS"] == env["ZDEVS"] == (
+        "02bb00c00001,02bb00000002,02bb00000003")
     assert "ZEPG_ID_PREFIX" not in env
 
 
@@ -365,7 +371,14 @@ def test_http_lineup_and_dup_stream_route_loopback():
         def tune(self, cid):
             tuned.append(cid)
             return None
-    saved = (h.get_lineup, h.get_brp_tuner)
+    saved = (h.get_lineup, h.get_brp_tuner, h.M1, h._m1_ready.is_set(),
+             dict(h._lu_flight), h._cache, h.M1_SPEC, dict(h._m1_info))
+    # the lineup endpoints wait for M1 discovery and use a bounded fetch
+    h.M1 = h.M1_SPEC = "192.0.2.10"
+    h._m1_info.update(spec="192.0.2.10", source="configured")
+    h._m1_ready.set()
+    h._lu_flight.update(ev=None, box=None)
+    h._cache = {"at": 0, "channels": []}
     h.get_lineup = lambda force=False: [a, b]
     h.get_brp_tuner = lambda: FakeTuner()
     js = ThreadingHTTPServer(("127.0.0.1", 0), h.Json)
@@ -397,7 +410,13 @@ def test_http_lineup_and_dup_stream_route_loopback():
     finally:
         js.shutdown()
         ts.shutdown()
-        h.get_lineup, h.get_brp_tuner = saved
+        (h.get_lineup, h.get_brp_tuner, h.M1, was_ready, flight,
+         h._cache, h.M1_SPEC, info) = saved
+        h._m1_info.clear()
+        h._m1_info.update(info)
+        if not was_ready:
+            h._m1_ready.clear()
+        h._lu_flight.update(flight)
 
 
 def _entry(**kw):
@@ -410,8 +429,9 @@ def _entry(**kw):
 
 def test_review_default_rejects_real_mini_and_m1_push_ip():
     import copy
-    c = {"m1s": [_entry(brp_devs=[{"dev": "02bb00c00001",
-                                   "push_ip": "192.0.2.237"}])]}
+    # no built-in list of "real Mini" addresses any more: it is opt-in config
+    c = {"known_real_minis": ["192.0.2.237"], "m1s": [_entry(
+        brp_devs=[{"dev": "02bb00c00001", "push_ip": "192.0.2.237"}])]}
     e, _ = m1config.validate(c)               # no client_ips passed (CLI path)
     assert any("real Mini" in x for x in e), e
     c = {"m1s": [_entry(brp_devs=[{"dev": "02bb00c00001",
@@ -426,8 +446,8 @@ def test_review_default_rejects_real_mini_and_m1_push_ip():
     # the CLI entry point rejects it too
     import subprocess
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-        json.dump({"m1s": [_entry(brp_devs=[{"dev": "02bb00c00001",
-                   "push_ip": "192.0.2.237"}])]}, fh)
+        json.dump({"known_real_minis": ["192.0.2.237"], "m1s": [_entry(
+            brp_devs=[{"dev": "02bb00c00001", "push_ip": "192.0.2.237"}])]}, fh)
     r = subprocess.run([sys.executable, os.path.join(os.path.dirname(HERE),
                         "m1config.py"), fh.name], capture_output=True, text=True)
     os.unlink(fh.name)
