@@ -223,13 +223,40 @@ class Apply(NoNet):
         plan, errs = self.mkplan()
         sent = []
         res = m1super.apply_plan(plan, errs, apply=True,
-                                 send=lambda ip, data: sent.append((ip, data)),
+                                 send=lambda ip, data, *_: sent.append((ip, data)),
                                  is_local=lambda ip: True)
         self.assertEqual(len(res), 3)
         for (ip, data), d in zip(sent, plan["m1s"][0]["brp_devs"]):
             a = m1disco.parse(data, ip)
             self.assertEqual((ip, a.dev, a.ip, a.share, a.tuners),
                              (d["push_ip"], d["dev"], d["push_ip"], 1, 0))
+
+    def test_apply_passes_m1_for_unicast_and_epoch_token(self):
+        plan, errs = self.mkplan()
+        sent = []
+        m1super.apply_plan(plan, errs, apply=True,
+                           send=lambda *a: sent.append(a),
+                           is_local=lambda ip: True)
+        for ip, data, m1addr in sent:
+            self.assertEqual(m1addr, plan["m1s"][0]["m1"])
+            self.assertGreater(m1disco.parse(data, ip).token, 1000000000)
+
+    def test_udp_sender_broadcasts_then_unicasts_to_m1(self):
+        calls = []
+
+        class S:
+            def setsockopt(self, *a): pass
+            def bind(self, a): calls.append(("bind", a))
+            def sendto(self, d, t): calls.append(("to", t))
+            def close(self): pass
+        orig = m1super.socket.socket
+        m1super.socket.socket = lambda *a, **k: S()
+        try:
+            m1super._udp_sender("192.0.2.240", b"x", "192.0.2.10")
+        finally:
+            m1super.socket.socket = orig
+        self.assertEqual([c[1] for c in calls if c[0] == "to"],
+                         [("255.255.255.255", 31064), ("192.0.2.10", 31064)])
 
     def test_refuses_when_alias_not_local(self):
         plan, errs = self.mkplan()
@@ -296,7 +323,7 @@ class Apply(NoNet):
 
         def fake_apply(plan, errs, apply=False, send=None, is_local=None):
             return orig_apply(plan, errs, apply=apply,
-                              send=lambda ip, d: sent.append(ip),
+                              send=lambda ip, d, *_: sent.append(ip),
                               is_local=lambda ip: True)
         m1super.apply_plan = fake_apply
         try:

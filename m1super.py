@@ -294,14 +294,17 @@ class ApplyRefused(Exception):
     pass
 
 
-def _udp_sender(src_ip, data, port=m1disco.PORT):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        s.bind((src_ip, 0))      # real source = the push IP, no spoofing
-        s.sendto(data, ("255.255.255.255", port))
-    finally:
-        s.close()
+def _udp_sender(src_ip, data, m1=None, port=m1disco.PORT):
+    """Broadcast the ANNOUNCE and, when ``m1`` is given, also unicast it to the
+    M1 (the hand-run test that registered fresh ids did both)."""
+    for tgt in ["255.255.255.255"] + ([m1] if m1 else []):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.bind((src_ip, 0))  # real source = the push IP, no spoofing
+            s.sendto(data, (tgt, port))
+        finally:
+            s.close()
 
 
 def apply_plan(plan, errs, apply=False, send=None, is_local=zbconf._is_local):
@@ -329,10 +332,12 @@ def apply_plan(plan, errs, apply=False, send=None, is_local=zbconf._is_local):
             if not is_local(ip):
                 raise ApplyRefused("push ip %s is not assigned to this host; add "
                                    "the alias first (printed by plan)" % ip)
-            todo.append((m["name"], dev, ip))
+            todo.append((m["name"], dev, ip, m["m1"]))
     res = []
-    for name, dev, ip in todo:
-        send(ip, m1disco.build_announce(dev, ip))
+    for name, dev, ip, m1addr in todo:
+        # token = unix time, as in the announce that registered fresh ids
+        send(ip, m1disco.build_announce(dev, ip, token=int(time.time()) & 0x7fffffff),
+             m1addr)
         res.append({"m1": name, "dev": dev, "push_ip": ip, "sent": True})
     return res
 
