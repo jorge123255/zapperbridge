@@ -28,7 +28,8 @@ var R = {
   m.appendChild(table([["channel",f("chan_id")],["client",f("client_ip")],["user-agent",f("ua")],["start",f("start")],["dur s",f("dur_sec")],["reason",f("reason")],["bytes",f("bytes")],["wgap",function(r){return r.wgap?JSON.stringify(r.wgap):null;}],["pacer",function(r){return r.pacer?JSON.stringify(r.pacer):null;}]],s.recent_closed));});},
  Lineup: function(m){return get("/api/ui/lineup").then(function(s){
   m.appendChild(el("p",s.count+" channels ("+(s.cached_age_sec==null?"lineup not cached yet":"cached "+s.cached_age_sec+" s ago")+"; this page never refreshes it)"));
-  m.appendChild(table([["#",f("number")],["name",f("name")],["chan_id",f("chan_id")],["proto",f("protocol")],["HD",f("hd")],["DRM",f("drm")]],s.channels));});},
+  m.appendChild(el("p","codecs learned from tuned streams: "+s.codecs_learned+", not yet learned: "+s.codecs_unknown));
+  m.appendChild(table([["#",f("number")],["name",f("name")],["chan_id",f("chan_id")],["proto",f("protocol")],["HD",f("hd")],["DRM",f("drm")],["video",f("video")],["audio",f("audio")]],s.channels));});},
  Devices: function(m){return get("/api/ui/devices").then(function(s){
   s.configured_m1s.forEach(function(d){m.appendChild(el("h2","Configured M1 "+d.ip));m.appendChild(kv({spec:d.spec,m1_dev:d.dev,source:d.source,hdhr_device_id:d.hdhr_device_id,hls_tuner:d.hls_tuner}));
    m.appendChild(table([["BRP dev",f("dev")],["push IP",f("push_ip")],["alias present",f("alias_present")]],d.brp_devs));});

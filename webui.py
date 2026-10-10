@@ -165,16 +165,30 @@ def snap_lineup(emu):
     cache = getattr(emu, "_cache", {})
     chans = list(cache.get("channels") or [])
     rows = []
+    learned = unknown = 0
     try:
+        cf = getattr(emu, "codec_fields", None)
         for r in emu.lu.rows(chans, getattr(emu, "XMLTV_PREFIX", "")):
             c = r.chan
-            rows.append({"number": r.gn, "name": r.name, "chan_id": str(c.get("chan_id", "")),
-                         "protocol": str(c.get("protocol", "")),
-                         "hd": 1 if (c.get("v_res") or 0) >= 720 else 0,
-                         "drm": 1 if c.get("encrypted") else 0})
+            row = {"number": r.gn, "name": r.name, "chan_id": str(c.get("chan_id", "")),
+                   "protocol": str(c.get("protocol", "")),
+                   "hd": 1 if (c.get("v_res") or 0) >= 720 else 0,
+                   "drm": 1 if c.get("encrypted") else 0}
+            if cf is not None:
+                try:   # read-only cache lookup; never tunes or probes
+                    cod = cf(r)
+                except Exception:
+                    cod = {}
+                row["video"] = cod.get("VideoCodec", "")
+                row["audio"] = cod.get("AudioCodec", "")
+                if cod:
+                    learned += 1
+                else:
+                    unknown += 1
+            rows.append(row)
     except Exception:
         rows = []
-    return {"count": len(rows), "cached_age_sec": (round(time.time() - cache["at"], 1)
+    return {"count": len(rows), "codecs_learned": learned, "codecs_unknown": unknown, "cached_age_sec": (round(time.time() - cache["at"], 1)
                                                     if cache.get("at") else None),
             "hls_tuner": bool(getattr(emu, "HLS_TUNER", False)), "channels": rows}
 
