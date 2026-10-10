@@ -66,9 +66,9 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: zapperbridge
-          # Placeholder: set OWNER and TAG to the published image you use
-          # (pin a version tag rather than latest). arm64 nodes need an arm64 image.
-          image: ghcr.io/OWNER/zapperbridge:TAG
+          # Published multi-arch image (amd64 + arm64). Pin a version tag.
+          # Also available as ghcr.io/jorge123255/zapperbridge:0.1.0
+          image: docker.io/sunnyside1/zapperbridge:v0.1.0
           # Image loaded by hand with `ctr images import` and not pulled? Use:
           #   image: zapperbridge:k3s-test
           #   imagePullPolicy: Never

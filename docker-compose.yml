@@ -9,7 +9,7 @@
 services:
   zapperbridge:
     build: .
-    # image: ghcr.io/jorge123255/zapperbridge:latest   # once published
+    # image: sunnyside1/zapperbridge:v0.1.0   # Docker Hub; use instead of "build: ."
     container_name: zapperbridge
     restart: unless-stopped
     command: ["run"]            # "check" = validate and exit

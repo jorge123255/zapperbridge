@@ -68,8 +68,8 @@ mini-PC, Raspberry Pi, VM with a bridged NIC). Steps:
    HDHomeRun at `http://<host>`; `curl http://<host>/lineup.json` should list
    your channels. A multi-M1 setup gets one virtual tuner per M1.
 
-`<image>` is the image you built (`docker build -t zapperbridge .`) or the
-published one once the name is final. Find M1s first with
+`<image>` is `sunnyside1/zapperbridge:v0.1.0` (Docker Hub, amd64 and arm64;
+`latest` also works) or an image you built yourself (`docker build -t zapperbridge .`). Find M1s first with
 `docker run --rm --network host <image> discover --listen 60` (a dry run:
 receive-only, sends nothing).
 
@@ -377,8 +377,9 @@ service ports.
 
 Details: [`docs/DOCKER.md`](docs/DOCKER.md), `docker-compose.yml`,
 `zapperbridge.example.toml`. Validate a config with
-`python3 docker/entrypoint.py check` (set `ZB_CONFIG`). Image: `ghcr.io/jorge123255/zapperbridge`
-(once published); or build it yourself with `docker build -t zapperbridge .`.
+`python3 docker/entrypoint.py check` (set `ZB_CONFIG`). Image: `docker pull sunnyside1/zapperbridge:v0.1.0`
+(Docker Hub; a copy is also pushed to `ghcr.io/jorge123255/zapperbridge` by the release workflow);
+or build it yourself with `docker build -t zapperbridge .`.
 
 ## License
 

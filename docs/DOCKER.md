@@ -130,7 +130,7 @@ by hand. Default is on (unchanged).
 * Extra push IPs under macvlan/ipvlan (needs an opt-in NET_ADMIN helper).
 * Reserved keys accepted but ignored: UDP 65001 responder, checksum DeviceID,
   `ui.mode = "admin"`.
-* The image has not been built or run yet; the config layer, the Dockerfile
+* Published as `sunnyside1/zapperbridge` on Docker Hub (`docker pull sunnyside1/zapperbridge:v0.1.0`, amd64 + arm64). Registration of new tuners on a fresh M1 from Docker is not yet validated. Earlier note: the image had not been run on real hardware; the config layer, the Dockerfile
   (static review) and the healthcheck are unit-tested offline. CI builds it.
 
 ## Web UI, token and healthcheck
