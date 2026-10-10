@@ -1,0 +1,407 @@
+{
+ "2.1": {
+  "GuideName": "CBS2-HD",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "2.2": {
+  "GuideName": "StartTV",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "2.3": {
+  "GuideName": "DABL",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "2.4": {
+  "GuideName": "365BLK",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "2.5": {
+  "GuideName": "Comet",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "5.1": {
+  "GuideName": "NBC5",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "5.2": {
+  "GuideName": "COZI",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "5.3": {
+  "GuideName": "CRIMES",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "5.4": {
+  "GuideName": "OXYGEN",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "7.1": {
+  "GuideName": "WLS-HD",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "7.2": {
+  "GuideName": "LOCLish",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "7.3": {
+  "GuideName": "CHARGE",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "8.1": {
+  "GuideName": "WILC-CD",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "8.2": {
+  "GuideName": "WILC-ES",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "8.3": {
+  "GuideName": "WILC-SD",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "9.1": {
+  "GuideName": "WGN CW",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "9.2": {
+  "GuideName": "ANTENNA",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "9.3": {
+  "GuideName": "GRIT 9.3",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "9.4": {
+  "GuideName": "REWIND",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "9.5": {
+  "GuideName": "TheNest",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "11.1": {
+  "GuideName": "WTTW HD",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "11.2": {
+  "GuideName": "Prime",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "11.3": {
+  "GuideName": "Create",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "11.4": {
+  "GuideName": "Kids",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "23.1": {
+  "GuideName": "METV",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "23.2": {
+  "GuideName": "HEROES 23.2",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "23.12": {
+  "GuideName": "EMLW",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.1": {
+  "GuideName": "WPVN-CD 24.1",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.2": {
+  "GuideName": "WPVN-CD 24.2",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.3": {
+  "GuideName": "WPVN-CD 24.3",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.4": {
+  "GuideName": "WPVN-CD 24.4",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.5": {
+  "GuideName": "WPVN-CD 24.5",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.6": {
+  "GuideName": "WPVN-CD 24.6",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.7": {
+  "GuideName": "WPVN-CD 24.7",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.8": {
+  "GuideName": "WPVN-CD 24.8",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.9": {
+  "GuideName": "WPVN-CD 24.9",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.10": {
+  "GuideName": "WPVN-CD 24.10",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.11": {
+  "GuideName": "WPVN-CD 24.11",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "24.12": {
+  "GuideName": "WPVN-CD 24.12",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.1": {
+  "GuideName": "The U",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.2": {
+  "GuideName": "U Too",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.3": {
+  "GuideName": "MeTV",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.4": {
+  "GuideName": "HEROES 26.4",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.5": {
+  "GuideName": "STORY",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.6": {
+  "GuideName": "CATCHY 26.6",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.7": {
+  "GuideName": "TOONS",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "26.8": {
+  "GuideName": "WEST",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "32.1": {
+  "GuideName": "WFLD-DT",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "32.2": {
+  "GuideName": "Movies!",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "32.3": {
+  "GuideName": "Buzzr",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "32.4": {
+  "GuideName": "ROAR",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "32.5": {
+  "GuideName": "Fox WX",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "38.5": {
+  "GuideName": "IONPlus",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "38.7": {
+  "GuideName": "GameSho",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "38.8": {
+  "GuideName": "HSN 38.8",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "40.1": {
+  "GuideName": "ESTV",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "40.3": {
+  "GuideName": "Hot97",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "44.1": {
+  "GuideName": "WSNS-HD",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "44.2": {
+  "GuideName": "T-XITOS",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "48.1": {
+  "GuideName": "U TOO",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "48.2": {
+  "GuideName": "START",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "48.3": {
+  "GuideName": "CATCHY 48.3",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "48.4": {
+  "GuideName": "METV+",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "50.1": {
+  "GuideName": "WPWR-DT",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "60.1": {
+  "GuideName": "WXFT-DT",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "60.2": {
+  "GuideName": "ION MYS",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "60.3": {
+  "GuideName": "Quest",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "62.1": {
+  "GuideName": "WJYSDT",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "62.2": {
+  "GuideName": "CRTV",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "62.4": {
+  "GuideName": "HRTLND",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "62.5": {
+  "GuideName": "QVC",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "62.6": {
+  "GuideName": "TBD",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "62.7": {
+  "GuideName": "JTV",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "62.8": {
+  "GuideName": "HSN 62.8",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "62.9": {
+  "GuideName": "HSN2",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "62.10": {
+  "GuideName": "MCTV",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "66.1": {
+  "GuideName": "WGBO-DT",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "66.2": {
+  "GuideName": "MVSGLD",
+  "VideoCodec": "H264",
+  "AudioCodec": "AC3"
+ },
+ "66.3": {
+  "GuideName": "GREAT",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "66.4": {
+  "GuideName": "CRIME",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ },
+ "66.5": {
+  "GuideName": "GRIT 66.5",
+  "VideoCodec": "MPEG2",
+  "AudioCodec": "AC3"
+ }
+}

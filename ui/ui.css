@@ -1,0 +1,12 @@
+body{font:14px/1.4 system-ui,sans-serif;margin:0;background:#111;color:#ddd}
+header{display:flex;gap:12px;align-items:center;padding:10px 16px;background:#1b1b1b}
+h1{font-size:18px;margin:0}h2{font-size:15px;margin:16px 0 6px}
+nav{display:flex;gap:4px;padding:6px 16px;background:#161616;flex-wrap:wrap}
+nav button{background:#262626;color:#ddd;border:0;padding:6px 12px;cursor:pointer;border-radius:4px}
+nav button.on{background:#3a5a9a}
+main{padding:8px 16px}table{border-collapse:collapse;width:100%;margin-bottom:8px}
+th,td{text-align:left;padding:3px 8px;border-bottom:1px solid #2a2a2a;vertical-align:top}
+th{color:#999;font-weight:500}.badge{padding:2px 8px;border-radius:10px;background:#444}
+.badge.ok{background:#1d6b2f}.badge.bad{background:#8a2a2a}.ro{color:#888;font-size:12px}
+.warn{color:#e8b64a}pre,code{background:#1b1b1b;padding:2px 4px;border-radius:3px;white-space:pre-wrap}
+pre{padding:8px;margin:4px 0}.mono{font-family:ui-monospace,monospace;font-size:12px}

@@ -1,0 +1,48 @@
+name: Bug report
+description: Something does not work (no streams, wrong lineup, crash)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please redact private IPs/MACs you do not want public. Do **not** post
+        licence files, keys or anything from protected (A3SA/DRM) streams.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How are you running it?
+      options: [Docker (host network), Docker (macvlan/ipvlan), Native Python on Linux, Native Python on macOS, Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Image tag / git commit
+  - type: input
+    id: m1
+    attributes:
+      label: M1 model and firmware (if known), number of M1s
+  - type: input
+    id: client
+    attributes:
+      label: Client app (Channels DVR, Jellyfin, VLC, ...)
+  - type: textarea
+    id: check
+    attributes:
+      label: Output of `check`
+      description: "`docker run --rm --network host -v $PWD/zapperbridge.toml:/config/zapperbridge.toml:ro <image> check`"
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Redacted log excerpt
+      description: "`docker logs zapperbridge` around the problem (or the hdhr_facade.log)"
+      render: text
