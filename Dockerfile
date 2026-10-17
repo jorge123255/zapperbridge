@@ -2,7 +2,7 @@
 # zapperbridge: stdlib-only Python, no pip packages.
 # Base pinned to a tag AND its multi-arch (amd64+arm64) index digest, resolved
 # 2026-10-10 from Docker Hub. Dependabot (docker ecosystem) proposes bumps.
-FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM python:3.14.8-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 ARG VERSION=dev
 ARG REVISION=unknown
