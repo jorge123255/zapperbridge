@@ -249,6 +249,17 @@ HLS_CHANNEL = {"chan_id": "hls:%s" % HLS_SLOT, "chan_major": 999, "chan_minor": 
                "protocol": "ATSC%s" % HLS_PROTO, "h_res": 1920, "v_res": 1080}
 
 
+def hls_seen_kind(kind):
+    """The 999.1 row follows what the M1's own tuner was last seen serving:
+    fMP4 means ATSC 3.0 (Modulation atsc3), MPEG-TS means ATSC 1.0. Guide
+    number, name and tuner count never change."""
+    proto = "3" if kind == "fmp4" else "1"
+    if HLS_CHANNEL.get("protocol") != "ATSC" + proto:
+        print("hls row %s now ATSC%s (M1 window serves %s)" % (
+            HLS_GUIDE, proto, "fMP4" if kind == "fmp4" else "MPEG-TS"), flush=True)
+        HLS_CHANNEL["protocol"] = "ATSC" + proto
+
+
 def get_lineup(force=False):
     """BRP lineup plus the M1's own tuner as a fourth row."""
     chans = _lineup_raw(force)
@@ -1281,7 +1292,8 @@ class Stream(BaseHTTPRequestHandler):
         self.end_headers()
         blk, n = [], 0
         try:
-            for pkt in hlstuner.HlsTuner(HLS_PROTO, HLS_SLOT).packets():
+            for pkt in hlstuner.HlsTuner(HLS_PROTO, HLS_SLOT,
+                                             on_kind=hls_seen_kind).packets():
                 blk.append(pkt)
                 if len(blk) >= 128:
                     self.wfile.write(b"".join(blk))
@@ -1490,8 +1502,11 @@ class Stream(BaseHTTPRequestHandler):
                 sess.t0 = time.time()
             if sess is None:
                 lf = tuner.last_fail or {}
+                why = lf.get("reason", "unknown")
+                if lf.get("detail"):
+                    why = "%s: %s" % (why, lf["detail"])
                 zdiag.tlog("tune %s soft-fail (%s): stream closed with 0 bytes" % (
-                    ch["chan_id"], lf.get("reason", "unknown")))
+                    ch["chan_id"], why))
                 self._zlog_stream("stream close", ch["chan_id"],
                                   "reason=tune_failed(%s) dur=%.2fs" % (
                                       lf.get("reason", "unknown"),

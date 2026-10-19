@@ -144,6 +144,12 @@ CHUNK = int(os.environ.get("ZCHUNK", "256"))
 PSI_SEC = float(os.environ.get("ZPSI", "0.1"))
 PSI_PKTS = int(os.environ.get("ZPSI_PKTS", "64"))
 PUSH_WAIT = float(os.environ.get("ZPUSH_WAIT", "6"))
+#: api9 reply wait. ATSC 1.0 tunes answer in ~2 s; ATSC 3.0 channels (chan_id
+#: top nibble 3) were seen not answering within 8 s, so they get longer, and
+#: by default one attempt (a 3.0 tune holds the BRP lock while it waits).
+TUNE_WAIT = float(os.environ.get("ZTUNE_WAIT", "8"))
+ATSC3_TUNE_WAIT = float(os.environ.get("ZATSC3_TUNE_WAIT", "25"))
+ATSC3_TUNE_TRIES = max(1, int(os.environ.get("ZATSC3_TUNE_TRIES", "1")))
 #: The M1 pushes start mid-GOP. For MPEG-2 video the output is held until a
 #: PES with a sequence header + I-picture arrives (see GopGate). If that does
 #: not happen within this wall time / byte budget the held data is flushed
@@ -200,10 +206,11 @@ def mk_pat(pmt_pid, ver=0):
     return _section(0x00, body)
 
 
-def mk_pmt(pcr_pid, es, ver=0):
+def mk_pmt(pcr_pid, es, ver=0, descs=None):
     """Spec-correct PMT (section_number/last_section_number present, reserved
     bits set, version in the right bits). AC-3 (0x81) gets the ATSC 'AC-3'
-    registration descriptor."""
+    registration descriptor; ``descs`` ({pid: bytes}) adds ES descriptors
+    (the ATSC 3.0 remux uses it for the DVB AC-4 descriptor)."""
     body = bytearray()
     body += bytes([OUT_PROG >> 8, OUT_PROG & 0xFF])
     body.append(0xC1 | ((ver & 0x1F) << 1))
@@ -211,6 +218,8 @@ def mk_pmt(pcr_pid, es, ver=0):
     body += bytes([0xE0 | (pcr_pid >> 8), pcr_pid & 0xFF, 0xF0, 0x00])
     for pid, st in sorted(es.items()):
         desc = REG_AC3 if st == 0x81 else b""
+        if descs and pid in descs:
+            desc += descs[pid]
         body += bytes([st, 0xE0 | (pid >> 8), pid & 0xFF,
                        0xF0 | (len(desc) >> 8), len(desc) & 0xFF]) + desc
     return _section(0x02, body)
@@ -228,6 +237,56 @@ def psi_packet(pid, section, cc):
     return bytes(p)
 
 
+def atsc_standard(chan_id):
+    """ATSC standard from an M1 chan_id: the top nibble of the 64-bit id
+    (1 = ATSC 1.0, 3 = ATSC 3.0). None when chan_id is not a number."""
+    try:
+        v = chan_id if isinstance(chan_id, int) else int(str(chan_id), 0)
+    except (TypeError, ValueError):
+        return None
+    return (v >> 60) & 0xF
+
+
+def tune_wait(chan_id):
+    """Seconds to wait for the api9 reply for this channel."""
+    return ATSC3_TUNE_WAIT if atsc_standard(chan_id) == 3 else TUNE_WAIT
+
+
+def payload_format(data):
+    """'ts', 'fmp4', 'data-framed' or 'other' from the first bytes of a push
+    connection or frame body (diagnostics only)."""
+    if not data:
+        return "empty"
+    if data[:4] == b"Data":
+        return "data-framed"
+    if data[0] == 0x47 and (len(data) < 189 or data[188] == 0x47):
+        return "ts"
+    if len(data) >= 8 and bytes(data[4:8]) in (b"ftyp", b"styp", b"moof",
+                                                 b"moov", b"sidx", b"emsg"):
+        return "fmp4"
+    return "other"
+
+
+def reply_summary(r, last_raw=None):
+    """One-line raw view of a BRP reply for logs (no secrets in BRP)."""
+    if not r:
+        lr = last_raw or {}
+        if lr.get("nbytes"):
+            return "no full reply (partial header %d/64 bytes: %s)" % (
+                lr["nbytes"], lr.get("partial", ""))
+        return "no reply bytes"
+    body = r.get("body") or b""
+    if body[:1] == b"\x78":
+        try:
+            body = zlib.decompress(body)
+        except Exception:
+            pass
+    head = body.rstrip(b"\x00")[:160].decode("utf-8", "replace")
+    return "err_name=%s a0=%s a1=%s a2=%s a3=%s len1=%s len2=%s body=%r" % (
+        r.get("err_name"), r.get("a0"), r.get("a1"), r.get("a2"), r.get("a3"),
+        r.get("len1"), r.get("len2"), head)
+
+
 def _recv_all(sk, n):
     buf = b""
     while len(buf) < n:
@@ -239,6 +298,20 @@ def _recv_all(sk, n):
             return None
         buf += d
     return buf
+
+
+def _recv_part(sk, n):
+    """(bytes or None, what arrived): like _recv_all but keeps a partial read."""
+    buf = b""
+    while len(buf) < n:
+        try:
+            d = sk.recv(min(65536, n - len(buf)))
+        except Exception:
+            return None, buf
+        if not d:
+            return None, buf
+        buf += d
+    return buf, buf
 
 
 def _frame_pids(data):
@@ -948,6 +1021,12 @@ class Tuner:
                        "busy": 0, "queue_timeouts": 0, "claim_timeouts": 0,
                        "tune_failures": 0}
         self.last_fail = None
+        self.last_raw = None
+        #: (chan_id, until) while an ATSC 3.0 tune is in flight: every push
+        #: connection's first bytes are logged; count of those connections.
+        self._a3_watch = None
+        self._a3_conns = 0
+        self._tune_detail = None
         self._start_listener()
         threading.Thread(target=self._heartbeat, daemon=True).start()
 
@@ -973,6 +1052,12 @@ class Tuner:
         zin = zkind = None          # diagnostics only (ZLOG_DIAG)
         why = "done"
         try:
+            a3 = getattr(self, "_a3_watch", None)
+            if a3 is not None and time.time() < a3[1]:
+                try:
+                    self._a3_push_peek(c, a3[0])
+                except Exception:
+                    pass
             h = _recv_all(c, HDR)
             if not h or h[:4] != b"Data":
                 return
@@ -1022,6 +1107,35 @@ class Tuner:
                 c.close()
             except Exception:
                 pass
+
+    def _a3_push_peek(self, c, chan_id):
+        """Log what a push connection opens with during an ATSC 3.0 tune:
+        Data-framed (and then TS 0x47 vs fMP4 'ftyp'/'moof' in the body), or
+        raw TS / fMP4 / other. Peeks only; the normal path reads it after."""
+        self._a3_conns = getattr(self, "_a3_conns", 0) + 1
+        try:
+            local_ip = c.getsockname()[0]
+        except Exception:
+            local_ip = None
+        try:
+            c.settimeout(5)
+            pk = c.recv(HDR + 200, socket.MSG_PEEK)
+        except Exception as e:
+            zdiag.tlog("atsc3 push conn #%d for %s local=%s: peek failed %r" % (
+                self._a3_conns, chan_id, local_ip, e))
+            return
+        finally:
+            c.settimeout(15)
+        fmt = payload_format(pk)
+        body = ""
+        if fmt == "data-framed" and len(pk) > HDR:
+            body = " kind=%s body=%s body_first16=%s" % (
+                pk[4:8].hex(), payload_format(pk[HDR:]), pk[HDR:HDR + 16].hex())
+        zdiag.tlog("atsc3 push conn #%d for %s local=%s format=%s first16=%s%s" % (
+            self._a3_conns, chan_id, local_ip, fmt, pk[:16].hex(), body))
+        if fmt == "fmp4" or "body=fmp4" in body:
+            zdiag.tlog("atsc3 push for %s is fMP4 (ftyp/moof), not MPEG-TS: "
+                       "not supported on the BRP path yet" % chan_id)
 
     def _feed(self, sess, hdr, data):
         with sess.lock:
@@ -1344,7 +1458,12 @@ class Tuner:
             sk = socket.create_connection((M1, BRP_PORT), timeout=timeout)
             try:
                 sk.sendall(pack(api, dev or self.dev, **kw))
-                h = _recv_all(sk, 64)
+                if api == 9:
+                    h, got = _recv_part(sk, 64)
+                    self.last_raw = {"api": api, "nbytes": len(got),
+                                     "partial": got[:64].hex()}
+                else:
+                    h = _recv_all(sk, 64)
                 if not h:
                     return None
                 r = unpack_header(h)
@@ -1535,9 +1654,10 @@ class Tuner:
                 zdiag.tlog("no free tuner slot for %s" % chan_id)
                 self._fail(chan_id, "busy")
                 return None
+            self._tune_detail = None
             sess = self._tune_slot(slot, chan_id, gap)
             if sess is None:
-                self._fail(chan_id, "tune_failures")
+                self._fail(chan_id, "tune_failures", self._tune_detail)
                 return None
             t1 = time.time()
             deadline = t1 + CLAIM_WAIT
@@ -1568,11 +1688,13 @@ class Tuner:
         finally:
             self.tune_gate.release()
 
-    def _fail(self, chan_id, kind):
+    def _fail(self, chan_id, kind, detail=None):
         with self.lock:
             self.totals[kind] = self.totals.get(kind, 0) + 1
             self.last_fail = {"chan_id": chan_id, "reason": kind,
                               "at": time.time()}
+            if detail:
+                self.last_fail["detail"] = detail
 
     def _reserve(self):
         with self.lock:
@@ -1605,19 +1727,56 @@ class Tuner:
     def _tune_slot(self, slot, chan_id, gap):
         sess = Session(chan_id)
         inst = slot.inst
+        a3 = atsc_standard(chan_id) == 3
+        wait = tune_wait(chan_id)
+        if a3:
+            self._a3_conns = 0
+            self._a3_watch = (chan_id, time.time() + 3 * (wait + PUSH_WAIT))
+        try:
+            return self._tune_attempts(slot, chan_id, gap, sess, inst, a3, wait)
+        finally:
+            if a3:
+                zdiag.tlog("atsc3 tune %s: push conns seen during tune=%d" % (
+                    chan_id, self._a3_conns))
+                self._a3_watch = None
+
+    def _tune_attempts(self, slot, chan_id, gap, sess, inst, a3, wait):
         for attempt in range(3):
             if inst is None:
                 inst = self.join(slot)
                 time.sleep(gap)
+            if a3:
+                zdiag.tlog("atsc3 tune %s dev=%s inst=%s: ATSC 3.0 channel, "
+                           "waiting up to %.0fs for api9 (try %d)" % (
+                               chan_id, slot.dev, inst, wait, attempt + 1))
+            t9 = time.time()
+            self.last_raw = None
             try:
                 r9 = self.call(9, a0=3 if inst is None else inst,
                                a3=0xC0DEFA11, payload={"chan_id": chan_id},
-                               dev=slot.dev)
+                               dev=slot.dev, timeout=wait)
             except Exception as e:
                 zdiag.tlog("tune err %r dev=%s (try %d)" % (
                     e, slot.dev, attempt + 1))
+                if a3:
+                    zdiag.tlog("atsc3 tune %s: api9 raised %r after %.1fs" % (
+                        chan_id, e, time.time() - t9))
+                    if attempt + 1 >= ATSC3_TUNE_TRIES:
+                        self._tune_detail = (
+                            "ATSC 3.0 tune not answered by M1 within %.0fs" % wait)
+                        zdiag.tlog("tune %s: %s" % (chan_id, self._tune_detail))
+                        break
                 time.sleep(gap)
                 continue
+            if a3:
+                zdiag.tlog("atsc3 tune %s: api9 after %.1fs: %s" % (
+                    chan_id, time.time() - t9, reply_summary(r9, self.last_raw)))
+                if not r9 and attempt + 1 >= ATSC3_TUNE_TRIES:
+                    self._tune_detail = (
+                        "ATSC 3.0 tune not answered by M1 within %.0fs" % wait)
+                    zdiag.tlog("tune %s dev=%s inst=%s: %s" % (
+                        chan_id, slot.dev, inst, self._tune_detail))
+                    break
             if r9 and r9.get("err_name") == "SUCCESS":
                 with self.lock:
                     self.tseq[0] += 1
@@ -1671,6 +1830,7 @@ class Tuner:
                 "qdrop_bursts_total": qb,
                 "qmax": QMAX,
                 "tune_gate_busy": self.tune_gate.locked(),
+                "tune_wait_sec": {"atsc1": TUNE_WAIT, "atsc3": ATSC3_TUNE_WAIT},
                 "tune_fail_counts": {k: self.totals.get(k, 0) for k in
                                      ("busy", "queue_timeouts",
                                       "claim_timeouts", "tune_failures")},

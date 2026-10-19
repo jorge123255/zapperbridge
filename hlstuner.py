@@ -19,6 +19,7 @@ import sys
 import time
 import urllib.request
 
+import fmp4ts
 from brptune import OUT_PAT, OUT_PMT, PSI_SEC, mk_pat, mk_pmt, psi_packet
 
 M1 = os.environ.get("ZM1", "")
@@ -123,10 +124,128 @@ def es_map(seg):
     return es, pcr
 
 
+# ---- ATSC 3.0: the same window serving fMP4 (CMAF) instead of MPEG-TS ----
+
+_ATTR = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
+
+
+def _attrs(line):
+    return {k: v.strip('"') for k, v in _ATTR.findall(line.split(":", 1)[-1])}
+
+
+def parse_master(text):
+    """What a master playlist offers: {'fmp4', 'codecs', 'video', 'audio',
+    'audio_lang'}. 'audio' is the DEFAULT=YES audio rendition (else the
+    first); fmp4 is True when the codecs are HEVC/AC-4 (ATSC 3.0)."""
+    info = {"fmp4": False, "codecs": [], "video": None, "audio": None,
+            "audio_lang": None}
+    auds, pending = [], None
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if ln.startswith("#EXT-X-MEDIA:"):
+            a = _attrs(ln)
+            if a.get("TYPE") == "AUDIO" and a.get("URI"):
+                auds.append(a)
+        elif ln.startswith("#EXT-X-STREAM-INF:"):
+            pending = _attrs(ln)
+        elif ln.startswith("#EXT-X-MAP"):
+            info["fmp4"] = True
+        elif not ln.startswith("#") and pending is not None:
+            codecs = [c.strip() for c in pending.get("CODECS", "").split(",") if c.strip()]
+            info["codecs"] += codecs
+            if info["video"] is None and any(
+                    c.startswith(("hvc1", "hev1", "avc1", "avc3")) for c in codecs):
+                info["video"] = ln
+            pending = None
+    if any(c.startswith(("hvc1", "hev1", "ac-4")) for c in info["codecs"]):
+        info["fmp4"] = True
+    if auds:
+        d = next((a for a in auds if a.get("DEFAULT") == "YES"), auds[0])
+        info["audio"], info["audio_lang"] = d["URI"], d.get("LANGUAGE")
+    return info
+
+
+def parse_media(text):
+    """{'map': init URI or None, 'segments': [(seq, uri)]} for an fMP4 media
+    playlist. The M1 writes some leading entries garbled ('##XTINF:',
+    '##p_0010_...'); every line starting with '#' is a tag or garbage, never a
+    segment, so they are skipped (the clean entries that follow are the live
+    edge)."""
+    out = {"map": None, "segments": []}
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if ln.startswith("#"):
+            m = re.search(r'X-MAP:.*URI="([^"]+)"', ln)
+            if m and ln.startswith("#EXT-X-MAP"):
+                out["map"] = m.group(1)
+            continue
+        m = re.findall(r"\d+", ln)
+        out["segments"].append((int(m[-1]) if m else 0, ln))
+    return out
+
+
+def is_fmp4_playlist(text):
+    """True when a media playlist carries an EXT-X-MAP init (fMP4)."""
+    return any(ln.strip().startswith("#EXT-X-MAP") for ln in text.splitlines())
+
+
+def detect(base_url, get=None):
+    """('fmp4', master_info) or ('ts', None) for an M1 HLS window."""
+    get = get or _get
+    try:
+        info = parse_master(get(base_url + "master.m3u8").decode("utf-8", "replace"))
+        if info["fmp4"]:
+            return "fmp4", info
+    except Exception:
+        pass
+    try:
+        if is_fmp4_playlist(get(base_url + "video.m3u8").decode("utf-8", "replace")):
+            return "fmp4", {"fmp4": True, "codecs": [], "video": "video.m3u8",
+                            "audio": "audio1.m3u8", "audio_lang": None}
+    except Exception:
+        pass
+    return "ts", None
+
+
+class _Rendition:
+    """One fMP4 media playlist: init cache plus the last sequence sent."""
+
+    def __init__(self, url, kind, get, log):
+        self.url, self.kind, self.get, self.log = url, kind, get, log
+        self.dir = url.rsplit("/", 1)[0] + "/"
+        self.map_uri = None
+        self.tracks = None
+        self.sent = -1
+
+    def new_segments(self, fresh):
+        pl = parse_media(self.get(self.url).decode("utf-8", "replace"))
+        if pl["map"] and pl["map"] != self.map_uri:
+            self.tracks = fmp4ts.parse_init(self.get(self.dir + pl["map"]))
+            self.map_uri = pl["map"]
+            self.log("hls3 %s init %s tracks=%s" % (
+                self.kind, pl["map"], list(self.tracks.values())))
+        if self.tracks is None:
+            raise fmp4ts.Fmp4Error("%s playlist has no EXT-X-MAP init" % self.kind)
+        segs = [x for x in pl["segments"] if x[0] > self.sent]
+        if fresh:
+            segs = segs[-1:]
+        return segs
+
+    def fetch(self, seg):
+        data = self.get(self.dir + seg[1])
+        self.sent = seg[0]
+        return fmp4ts.parse_fragment(data, self.tracks)
+
+
 class HlsTuner:
     """One continuous MPEG-TS built from the M1's fixed HLS window."""
 
-    def __init__(self, proto="1", slot="1", fresh=True, stalls=40):
+    def __init__(self, proto="1", slot="1", fresh=True, stalls=40,
+                 on_kind=None, get=None, log=None):
         self.proto = proto
         self.slot = slot
         self.fresh = fresh
@@ -134,6 +253,10 @@ class HlsTuner:
         self.es = {}
         self.pcr = None
         self.nseg = 0
+        self.kind = None
+        self.on_kind = on_kind
+        self._get = get or _get
+        self.log = log or (lambda m: print(m, flush=True))
 
     def _remux(self, segs, cc, out_cc):
         """Pass the elementary streams through with our own counters and PSI."""
@@ -168,8 +291,70 @@ class HlsTuner:
                 yield bytes(out)
 
     def packets(self):
-        self._last_psi = 0.0
         url = base(self.proto, self.slot)
+        kind, info = detect(url, self._get)
+        self.kind = kind
+        if self.on_kind:
+            try:
+                self.on_kind(kind)
+            except Exception:
+                pass
+        if kind == "fmp4":
+            self.log("hls3: %s serves fMP4 (ATSC 3.0) codecs=%s audio=%s(%s); "
+                     "remuxing HEVC/AC-4 into MPEG-TS unchanged" % (
+                         url, ",".join(info["codecs"]) or "?",
+                         info["audio"], info["audio_lang"]))
+            for pkt in self._packets_fmp4(url, info):
+                yield pkt
+            return
+        for pkt in self._packets_ts(url):
+            yield pkt
+
+    def _packets_fmp4(self, url, info):
+        mux = fmp4ts.Muxer(log=self.log, psi_every=PSI_SEC)
+        rends = [_Rendition(url + (info["video"] or "video.m3u8"), "video",
+                            self._get, self.log)]
+        if info.get("audio"):
+            rends.append(_Rendition(url + info["audio"], "audio", self._get, self.log))
+        declared = set()
+        stalls, fresh = 0, self.fresh
+        samples = []
+        while stalls < self.stalls:
+            got = False
+            for r in rends:
+                try:
+                    segs = r.new_segments(fresh)
+                except Exception as e:
+                    self.log("hls3 %s playlist: %s" % (r.kind, e))
+                    if r.kind == "video":
+                        break
+                    continue
+                if r.map_uri not in declared:
+                    declared.add(r.map_uri)
+                    mux.declare(r.tracks)
+                for seg in segs:
+                    try:
+                        samples += r.fetch(seg)
+                    except Exception as e:
+                        self.log("hls3 %s seg %s: %s" % (r.kind, seg[1], e))
+                        r.sent = seg[0]
+                        continue
+                    if r.kind == "video":
+                        got = True
+                        self.nseg += 1
+            if not got:
+                stalls += 1
+                time.sleep(1.0)
+                continue
+            stalls, fresh = 0, False
+            self.es = dict(mux.es)
+            self.pcr = fmp4ts.VIDEO_PID
+            batch, samples = samples, []
+            for pkt in mux.mux(batch):
+                yield pkt
+
+    def _packets_ts(self, url):
+        self._last_psi = 0.0
         cc, out_cc = {}, {OUT_PAT: 0, OUT_PMT: 0}
         sent, stalls = 0, 0
         while stalls < self.stalls:
