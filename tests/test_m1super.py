@@ -92,7 +92,10 @@ class Plan(NoNet):
         plan, errs, warns, notes, _ = self.plan(cfg, m1pkt(), minipkt())
         self.assertEqual(errs, [])
         m = plan["m1s"][0]
-        self.assertEqual((m["m1"], m["tuner_count"], len(m["brp_devs"])), (M1IP, 4, 3))
+        # no [[m1]]: planned as the facade's implicit "auto" entry (same ids
+        # as `run`), with the discovered address kept for --apply
+        self.assertEqual((m["m1"], m["m1_ip"], m["tuner_count"],
+                          len(m["brp_devs"])), ("auto", M1IP, 4, 3))
         self.assertEqual([d["push_ip"] for d in m["brp_devs"]],
                          ["192.0.2.240", "192.0.2.241", "192.0.2.242"])
         self.assertTrue(all(len(d["dev"]) == 12 for d in m["brp_devs"]))
@@ -238,7 +241,8 @@ class Apply(NoNet):
                            send=lambda *a: sent.append(a),
                            is_local=lambda ip: True)
         for ip, data, m1addr in sent:
-            self.assertEqual(m1addr, plan["m1s"][0]["m1"])
+            self.assertEqual(m1addr, plan["m1s"][0]["m1_ip"])
+            self.assertEqual(m1addr, M1IP)
             self.assertGreater(m1disco.parse(data, ip).token, 1000000000)
 
     def test_udp_sender_broadcasts_then_unicasts_to_m1(self):

@@ -219,6 +219,52 @@ def resolve_seed(cfg, env=None, create=True):
                      "SAME device ids" % (os.path.dirname(path), e))
 
 
+ACTIVE_FILE = "active-ids.json"
+
+
+def write_active(plan, env=None):
+    """Record the device ids + push IPs the facade is started with in
+    <data dir>/active-ids.json, so `discover --apply` can refuse to announce
+    ids the running bridge does not use. No seed, no secrets. Best effort:
+    returns (path or None, error or None)."""
+    import json
+    import time
+    path = os.path.join(data_dir(env), ACTIVE_FILE)
+    rec = {"written_at": int(time.time()), "seed_fp": plan.get("seed_fp"),
+           "m1s": [{"name": m["name"], "m1": m["m1"],
+                    "devs": [d["dev"] for d in m["brp_devs"]],
+                    "push_ips": [d["push_ip"] for d in m["brp_devs"]]}
+                   for m in plan["m1s"]]}
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(rec, fh, indent=1)
+        os.replace(tmp, path)
+        return path, None
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return None, str(e)
+
+
+def read_active(env=None):
+    """(record or None, why) from write_active()."""
+    import json
+    path = os.path.join(data_dir(env), ACTIVE_FILE)
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+    except FileNotFoundError:
+        return None, "%s not found" % path
+    except (OSError, ValueError) as e:
+        return None, "%s unreadable: %s" % (path, e)
+    if not isinstance(d, dict) or not isinstance(d.get("m1s"), list):
+        return None, "%s malformed" % path
+    return d, "ok"
+
+
 def parse_pool(entries):
     """Expand ["a.b.c.240-249", "a.b.c.250-a.b.c.252", "10.0.0.8",
     "192.0.2.0/29"] into an ordered, de-duplicated list of IPs.
@@ -261,6 +307,13 @@ def derive_dev(prefix, seed, key, slot):
                           % prefix)
     h = hashlib.sha1(("%s|%s|%d" % (seed, key, slot)).encode()).hexdigest()
     return prefix + h[: 12 - len(prefix)]
+
+
+def seed_fingerprint(seed):
+    """Short, non-reversible tag of the device-id seed (8 hex). Printed by
+    check/run/discover so two containers can be compared without showing
+    the seed itself."""
+    return hashlib.sha1(("seed-fp|%s" % seed).encode()).hexdigest()[:8]
 
 
 def derive_hdhr_id(seed, key):
@@ -497,6 +550,7 @@ def expand(cfg):
         errs.append("push.check_free_fail must be true or false")
         cff = True
     plan = {"mode": mode, "pool": pool, "m1s": m1s,
+            "seed_fp": seed_fingerprint(seed),
             "reserved_ips": sorted(never_ips),
             "check_free": {"enabled": cf, "fail": cff},
             "tuners_total": (merged["tuner_count"] if merged else
@@ -629,7 +683,9 @@ def render_plan(plan, errs, warns):
         L.append("reserved (never push IPs): %s" % ", ".join(
             plan["reserved_ips"]))
     if plan.get("seed_source"):
-        L.append("device id seed: %s" % plan["seed_source"])
+        L.append("device id seed: %s%s" % (
+            plan["seed_source"], " (fingerprint %s)" % plan["seed_fp"]
+            if plan.get("seed_fp") else ""))
     L.append("network mode: %s | advertised TunerCount total: %d" % (
         plan["mode"], plan["tuners_total"]))
     if plan.get("merged"):
@@ -639,8 +695,10 @@ def render_plan(plan, errs, warns):
                      g["device_id"], len(plan["m1s"]), g["tuner_count"],
                      ", ".join("%s=%d" % kv for kv in sorted(g["usable"].items()))))
     for m in plan["m1s"]:
-        L.append("M1 %s  addr=%s  hdhr=%s  tuners=%d  http=%d ts=%d" % (
-            m["name"], m["m1"], m["device_id"], m["tuner_count"],
+        res = m.get("m1_ip")
+        L.append("M1 %s  addr=%s%s  hdhr=%s  tuners=%d  http=%d ts=%d" % (
+            m["name"], m["m1"], " (= %s)" % res if res and res != m["m1"]
+            else "", m["device_id"], m["tuner_count"],
             m["http_port"], m["ts_port"]))
         for d in m["brp_devs"]:
             L.append("   dev %s -> push %s:31061" % (

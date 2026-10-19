@@ -106,6 +106,26 @@ registered. It changes nothing and, by default, sends nothing.
   not own. It never sends an api6 join (the facade's bootstrap joins each id
   when it starts), never api7. Config files and env cannot enable it. Tests use
   a fake sender and block sockets.
+  An `auto` / `auto:<dev>` address is resolved to the M1's discovered IP for
+  the unicast copy (if discovery did not see the M1, only the broadcast is
+  sent and the output says so). A send error is printed per id
+  (`FAILED to announce ...`, exit code 4) instead of a traceback.
+  **Same ids as `run`:** the plan uses the same entries, seed and key as the
+  facade. `run` records the ids it starts with in `/data/active-ids.json`
+  (no seed in it), and `--apply` refuses if its ids differ (that happens when
+  the one-off container sees a different `/data`, e.g. another volume). Both
+  print a `device id seed ... (fingerprint xxxxxxxx)` line to compare. The
+  safest way is to run it inside the bridge container, so it shares its
+  `/data` and env:
+  `docker compose exec zapperbridge python3 /app/docker/entrypoint.py discover --listen 15 --apply`,
+  then restart the container so the facade joins the newly announced ids.
+  **Why the lineup fails:** `/health` → `api8` now shows `err_name` (the M1's
+  answer, e.g. `NOT_FOUND`, `DEVICE_ID_NOT_ALLOWED`, `NOT_SHARED`),
+  `handshake` (the api6 result) and a `hint`; the log prints it once per
+  change. `NOT_SHARED` = turn sharing on in the Zapper app; `NOT_FOUND` /
+  `DEVICE_ID_NOT_ALLOWED` = the bridge's device ids are not registered yet.
+  The facade itself never announces its ids (registration stays the explicit
+  `--apply` step); it only joins (api6) ids the M1 already knows.
   **Status: not validated.** A first real attempt (from a Kubernetes node, new
   device ID) sent the announce but the M1's api6 join still answered
   `NOT_FOUND` every time (7 tries). Cause unconfirmed; don't rely on `--apply`.
