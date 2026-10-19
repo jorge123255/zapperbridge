@@ -422,5 +422,57 @@ class Api8Reason(unittest.TestCase):
         self.assertIsNone(h._api8["hint"])
 
 
+class TesterPost60(Sandbox):
+    """Forum post 60: literal address, same toml, `persisted seed file` in
+    both outputs, yet different ids. Same seed => identical ids (proved
+    here); different ids therefore mean the two containers read different
+    /data/seed files (different volumes)."""
+    TOML = TESTER_TOML.replace('"auto:acdbda698f08"', '"192.0.2.54"')
+
+    def test_literal_address_plan_equals_facade(self):
+        run, disc = self.run_plan(), self.discover_plan()
+        self.assertEqual(self.devs(run), self.devs(disc))
+        self.assertEqual(self.facade_devs(run)[0][0], self.devs(disc)[0])
+
+    def test_only_a_different_seed_explains_a_mismatch(self):
+        run = self.run_plan()
+        with open(os.path.join(self.data, "seed"), "w") as fh:
+            fh.write("other-volume\n")
+        disc = self.discover_plan()
+        self.assertNotEqual(self.devs(run), self.devs(disc))
+        self.assertNotEqual(run["seed_fp"], disc["seed_fp"])
+
+    def test_address_form_is_part_of_the_key(self):
+        # documented behaviour: a literal address keys the ids on the IP,
+        # an auto spec on the entry name; changing the form changes the ids
+        lit = self.discover_plan()
+        with open(self.cfg, "w") as fh:
+            fh.write(TESTER_TOML)
+        auto = self.discover_plan()
+        self.assertNotEqual(self.devs(lit), self.devs(auto))
+
+
+class ExplicitDevsWorkaround(Sandbox):
+    DEVS = ["02bb00a0735a", "02bb003c6c0a", "02bb00c7fbb9"]
+    TOML = TESTER_TOML.replace(
+        "leases = 3\n",
+        'leases = 3\ndevs = ["02bb00a0735a", "02bb003c6c0a", "02bb00c7fbb9"]\n')
+
+    def test_devs_honoured_by_both_paths_even_with_different_seeds(self):
+        run = self.run_plan()
+        with open(os.path.join(self.data, "seed"), "w") as fh:
+            fh.write("other-volume\n")
+        disc = self.discover_plan()
+        self.assertEqual(self.devs(run), [self.DEVS])
+        self.assertEqual(self.devs(disc), [self.DEVS])
+        self.assertEqual(self.facade_devs(run)[0][0], self.DEVS)
+        sent = []
+        m1super.apply_plan(disc, [], apply=True,
+                           send=lambda ip, d, m1: sent.append(
+                               m1disco.parse(d, ip).dev) or [],
+                           is_local=lambda ip: True)
+        self.assertEqual(sent, self.DEVS)
+
+
 if __name__ == "__main__":
     unittest.main()
