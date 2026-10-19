@@ -178,12 +178,24 @@ def _entry_matches(entry, f):
     return addr in (f.dev, f.ip.lower())
 
 
+def _is_bare_auto(entry):
+    return str(entry.get("address", "")).strip().lower() in ("", "auto")
+
+
 def merge_config(cfg, found, sweep_ips=()):
     """(cfg2, notes): the user's cfg plus an ``[[m1]]`` entry per discovered
     M1 that is not already configured. Configured entries always win (their
     ``leases``/``devs``/``push_ips`` are untouched); a discovered M1 uses the
     announce-derived lease count. Real clients seen on the LAN (tuners=0)
-    have their IPs and ids added to the reserved/never lists."""
+    have their IPs and ids added to the reserved/never lists.
+
+    Each entry's discovered address is recorded as ``_resolved_ip`` (an
+    ``auto``/``auto:<dev>`` spec stays as written, so the device ids are
+    derived from exactly the same key the facade uses; only ``--apply``
+    needs the IP). A bare ``auto`` entry (or no ``[[m1]]`` at all, which the
+    facade treats as one ``auto`` entry) is bound to the first discovered M1
+    not claimed by an explicit entry, instead of adding a second entry with
+    the IP as its key (that derived different ids from the running facade)."""
     cfg = {k: (dict(v) if isinstance(v, dict) else
                list(v) if isinstance(v, list) else v) for k, v in cfg.items()}
     cfg["m1"] = [dict(e) for e in cfg.get("m1") or []]
@@ -202,27 +214,57 @@ def merge_config(cfg, found, sweep_ips=()):
             notes.append("protected real client %s @ %s (%s): added to "
                          "reserved IPs / never devs" % (c.dev, c.ip, c.model or "?"))
         push["reserved_ips"], push["never_devs"] = res, nd
+    m1s = []
     for f in found:
         if f.kind == "other":
             notes.append("%s @ %s ignored: %s" % (f.dev, f.ip, f.note))
-        if f.kind != "m1":
-            continue
-        hit = [e for e in cfg["m1"] if _entry_matches(e, f)]
+        if f.kind == "m1":
+            m1s.append(f)
+    if not cfg["m1"] and any(f.leases >= 1 for f in m1s):
+        # the facade's implicit default: one auto entry (expand() names it
+        # m1-1 and keys its ids on that name)
+        cfg["m1"].append({"address": "auto"})
+        notes.append("no [[m1]] entries: the first discovered M1 is planned "
+                     "as the facade's default \"auto\" entry (same ids as run)")
+
+    def note_leases(e, f):
+        if f.leases and "leases" not in e:
+            e["leases"] = f.leases
+            notes.append("%s: leases=%d from announce (%s)" % (
+                f.dev, f.leases, f.confidence))
+        elif "leases" in e and f.leases and int(e["leases"]) != f.leases:
+            notes.append("%s: config leases=%s overrides announce-derived "
+                         "%d (%s)" % (f.dev, e["leases"], f.leases,
+                                      f.confidence))
+
+    claimed = set()
+    for f in m1s:   # explicit matches first (an IP or auto:<dev|ip>)
+        hit = [e for e in cfg["m1"] if not _is_bare_auto(e)
+               and "_resolved_ip" not in e and _entry_matches(e, f)]
         if hit:
-            if f.leases and "leases" not in hit[0]:
-                hit[0]["leases"] = f.leases
-                notes.append("%s: leases=%d from announce (%s)" % (
-                    f.dev, f.leases, f.confidence))
-            elif "leases" in hit[0] and f.leases and int(hit[0]["leases"]) != f.leases:
-                notes.append("%s: config leases=%s overrides announce-derived "
-                             "%d (%s)" % (f.dev, hit[0]["leases"], f.leases,
-                                          f.confidence))
+            hit[0]["_resolved_ip"] = f.ip
+            note_leases(hit[0], f)
+            claimed.add(f.dev)
+    for f in m1s:   # then bare "auto" entries take the rest, in dev order
+        if f.dev in claimed or f.leases < 1:
+            continue
+        free = [e for e in cfg["m1"] if _is_bare_auto(e)
+                and "_resolved_ip" not in e]
+        if free:
+            free[0]["_resolved_ip"] = f.ip
+            note_leases(free[0], f)
+            claimed.add(f.dev)
+            notes.append("auto entry %s resolved to M1 %s @ %s" % (
+                free[0].get("name") or "#%d" % (cfg["m1"].index(free[0]) + 1),
+                f.dev, f.ip))
+    for f in m1s:
+        if f.dev in claimed:
             continue
         if f.leases < 1:
             notes.append("%s @ %s skipped: %s" % (f.dev, f.ip, f.note))
             continue
         cfg["m1"].append({"name": "m1-%s" % f.dev[-6:], "address": f.ip,
-                          "leases": f.leases})
+                          "leases": f.leases, "_resolved_ip": f.ip})
         notes.append("discovered M1 %s @ %s: %s [%s]" % (
             f.dev, f.ip, f.note, f.confidence))
     for ip in sweep_ips:
@@ -232,6 +274,14 @@ def merge_config(cfg, found, sweep_ips=()):
                          "added (no device id/tuner count). Add it as an "
                          "[[m1]] address if it is an M1" % (ip, BRP_PORT))
     return cfg, notes
+
+
+def _literal_ip(addr):
+    try:
+        ipaddress.IPv4Address(str(addr))
+        return str(addr)
+    except ValueError:
+        return None
 
 
 def announce_preview(plan):
@@ -255,17 +305,26 @@ def announce_preview(plan):
 def build_plan(cfg, found=(), sweep_ips=(), env=None, create_seed=False):
     """(plan dict, errors, warnings, notes, merged cfg). Pure unless
     create_seed (only --apply): then a missing per-install seed file is
-    created so the announced ids match what `run` will use."""
+    created so the announced ids match what `run` will use.
+
+    The ids come from the same zbconf.expand() call `run` makes, on the same
+    entries (an auto spec is kept as written). Each planned M1 also gets
+    ``m1_ip``: the literal address, or the discovered IP of an auto spec
+    (None when discovery did not resolve it)."""
     cfg2, notes = merge_config(cfg, list(found), sweep_ips)
+    resolved = [e.pop("_resolved_ip", None) for e in cfg2["m1"]]
     cfg3 = zbconf.apply_env(cfg2, env=env or {})
     cfg3, seed_source = zbconf.resolve_seed(cfg3, env=env, create=create_seed)
     _core, plan, errs, warns = zbconf.expand(cfg3)
     plan["seed_source"] = seed_source
-    for m in plan["m1s"]:
-        if m["m1"].lower().startswith("auto") and not any(
-                f.kind == "m1" for f in found):
-            warns.append("%s: address %s not resolved by discovery" % (
-                m["name"], m["m1"]))
+    for i, m in enumerate(plan["m1s"]):
+        ip = _literal_ip(m["m1"]) or (resolved[i] if i < len(resolved)
+                                      else None)
+        m["m1_ip"] = ip
+        if m["m1"].lower().startswith("auto") and not ip:
+            warns.append("%s: address %s not resolved by discovery (listen "
+                         "longer with --listen, or set the M1's IP)" % (
+                             m["name"], m["m1"]))
     return plan, errs, warns, notes, cfg2
 
 
@@ -301,31 +360,42 @@ class ApplyRefused(Exception):
 
 def _udp_sender(src_ip, data, m1=None, port=m1disco.PORT):
     """Broadcast the ANNOUNCE and, when ``m1`` is given, also unicast it to the
-    M1 (the hand-run test that registered fresh ids did both)."""
+    M1 (the hand-run test that registered fresh ids did both). Each target is
+    tried on its own; returns [(target, error or None)] so a failed unicast
+    does not hide a successful broadcast (or the other way round)."""
+    out = []
     for tgt in ["255.255.255.255"] + ([m1] if m1 else []):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             s.bind((src_ip, 0))  # real source = the push IP, no spoofing
             s.sendto(data, (tgt, port))
+            out.append((tgt, None))
+        except OSError as e:
+            out.append((tgt, "%s: %s" % (type(e).__name__, e)))
         finally:
             s.close()
+    return out
 
 
 def apply_plan(plan, errs, apply=False, send=None, is_local=zbconf._is_local):
     """Send one ANNOUNCE per planned (dev, push IP). ``apply`` must be True
     (the CLI sets it only from --apply). Refuses on any config error, on a
     missing push IP, or when the push IP is not owned by this host (a real
-    source address is required; nothing is spoofed). Returns the list of
-    results. ``send`` is injectable for tests."""
+    source address is required; nothing is spoofed). The unicast copy goes to
+    the M1's resolved IP (``m1_ip``), never to an unresolved ``auto:`` spec.
+    A send error is reported per id (``sent`` False + ``error``) instead of
+    aborting with a traceback. ``send`` is injectable for tests."""
     if apply is not True:
         raise ApplyRefused("apply requires an explicit apply=True (--apply)")
     if errs:
         raise ApplyRefused("config has errors; refusing to announce: %s" % errs[0])
     send = send or _udp_sender
-    never = set(plan.get("reserved_ips") or ()) | {m["m1"] for m in plan["m1s"]}
+    never = set(plan.get("reserved_ips") or ()) | {m["m1"] for m in plan["m1s"]} \
+        | {m.get("m1_ip") for m in plan["m1s"] if m.get("m1_ip")}
     todo = []
     for m in plan["m1s"]:
+        target = m.get("m1_ip") or _literal_ip(m["m1"])
         for d in m["brp_devs"]:
             ip, dev = d["push_ip"], d["dev"]
             if not ip:
@@ -337,14 +407,44 @@ def apply_plan(plan, errs, apply=False, send=None, is_local=zbconf._is_local):
             if not is_local(ip):
                 raise ApplyRefused("push ip %s is not assigned to this host; add "
                                    "the alias first (printed by plan)" % ip)
-            todo.append((m["name"], dev, ip, m["m1"]))
+            todo.append((m["name"], dev, ip, target, m["m1"]))
     res = []
-    for name, dev, ip, m1addr in todo:
+    for name, dev, ip, target, spec in todo:
+        r = {"m1": name, "dev": dev, "push_ip": ip, "m1_ip": target,
+             "sent": True, "error": None, "note": None}
+        if not target:
+            r["note"] = ("M1 address %s not resolved: broadcast only, no "
+                         "unicast copy" % spec)
         # token = unix time, as in the announce that registered fresh ids
-        send(ip, m1disco.build_announce(dev, ip, token=int(time.time()) & 0x7fffffff),
-             m1addr)
-        res.append({"m1": name, "dev": dev, "push_ip": ip, "sent": True})
+        try:
+            per = send(ip, m1disco.build_announce(
+                dev, ip, token=int(time.time()) & 0x7fffffff), target)
+        except OSError as e:
+            per = [("send", "%s: %s" % (type(e).__name__, e))]
+        bad = [(t, e) for t, e in (per or []) if e]
+        if bad:
+            r["error"] = "; ".join("%s -> %s" % (t, e) for t, e in bad)
+            r["sent"] = len(bad) < len(per)   # partly sent
+        res.append(r)
     return res
+
+
+def check_active(plan, active):
+    """Mismatches between this plan's ids and the ids the running facade
+    recorded at start (zbconf.read_active). [] when they agree or when there
+    is no record for an M1."""
+    out = []
+    by_name = {m.get("name"): m for m in (active or {}).get("m1s") or []}
+    for m in plan["m1s"]:
+        a = by_name.get(m["name"])
+        if not a:
+            continue
+        mine = [d["dev"] for d in m["brp_devs"]]
+        if list(a.get("devs") or []) != mine:
+            out.append("%s: this plan would announce %s but the bridge that "
+                       "last ran with this data dir uses %s" % (
+                           m["name"], ",".join(mine), ",".join(a.get("devs") or [])))
+    return out
 
 
 # ---- CLI --------------------------------------------------------------------
@@ -400,13 +500,46 @@ def main(argv=None, out=print):
     if errs:
         return 2
     if a.apply:
+        active, why = zbconf.read_active()
+        if active is None:
+            out("note: no record of a running bridge in %s (%s). If the bridge "
+                "runs in another container, run this inside it so both use the "
+                "same /data/seed: docker compose exec zapperbridge python3 "
+                "/app/docker/entrypoint.py discover --listen 15 --apply"
+                % (zbconf.data_dir(), why))
+        else:
+            mism = check_active(plan, active)
+            if mism:
+                for x in mism:
+                    out("REFUSED: " + x)
+                out("REFUSED: device id seed fingerprint here %s, bridge %s. "
+                    "This container sees a different /data (seed) than the "
+                    "running bridge. Run it inside the bridge container: "
+                    "docker compose exec zapperbridge python3 "
+                    "/app/docker/entrypoint.py discover --listen 15 --apply"
+                    % (plan.get("seed_fp"), active.get("seed_fp")))
+                return 3
         try:
             res = apply_plan(plan, errs, apply=True)
         except ApplyRefused as e:
             out("REFUSED: %s" % e)
             return 3
+        failed = 0
         for r in res:
-            out("announced %s from %s" % (r["dev"], r["push_ip"]))
+            if r.get("note"):
+                out("note: %s dev %s: %s" % (r["m1"], r["dev"], r["note"]))
+            if r.get("error"):
+                failed += 1
+                out("%s %s from %s (M1 %s): %s" % (
+                    "PARTLY announced" if r["sent"] else "FAILED to announce",
+                    r["dev"], r["push_ip"], r.get("m1_ip") or "unresolved",
+                    r["error"]))
+            else:
+                out("announced %s from %s (broadcast%s)" % (
+                    r["dev"], r["push_ip"],
+                    " + unicast to %s" % r["m1_ip"] if r.get("m1_ip") else ""))
+        if failed:
+            return 4
     return 0
 
 

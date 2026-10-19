@@ -84,6 +84,10 @@ def main(argv):
               "for it yet (docs/MERGED-LINEUP.md). Use \"per-m1\" to run.",
               file=sys.stderr)
         return 2
+    path, err = zbconf.write_active(plan)
+    if err:
+        print("note: could not record active device ids (%s); "
+              "`discover --apply` cannot cross-check them" % err, flush=True)
     procs = []
     for name, env in zbconf.launch_envs(plan):
         e = dict(os.environ)

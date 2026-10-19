@@ -76,7 +76,8 @@ MODEL = "ZBM1-gt698"
 _ssdp = [None]
 
 _cache = {"at": 0, "channels": []}
-_api8 = {"ok_at": 0.0, "fail_at": 0.0, "err": None, "source": None}
+_api8 = {"ok_at": 0.0, "fail_at": 0.0, "err": None, "source": None,
+         "err_name": None, "handshake": None, "hint": None, "_logged": None}
 LINEUP_CACHE_FILES = [os.path.join(HERE, n) for n in
                       ("lineup-cache.json", "lineup-now.json", "lineup.json")]
 
@@ -127,39 +128,93 @@ def start_heartbeat():
     th.start()
 
 
+#: What a refusal from the M1 usually means (BRP err_name -> what to do).
+API8_HINTS = {
+    "NOT_SHARED": "sharing is off on this M1: turn on sharing for it in the "
+                  "Zapper app",
+    "NOT_FOUND": "the M1 does not know device id %(dev)s yet: register the "
+                 "bridge's ids with `discover --apply` (docs/DOCKER.md)",
+    "DEVICE_ID_NOT_ALLOWED": "the M1 does not allow device id %(dev)s: "
+                             "register the bridge's ids with `discover "
+                             "--apply` (docs/DOCKER.md)",
+}
+
+
+def _api8_hint(err_name):
+    h = API8_HINTS.get(err_name or "")
+    return h % {"dev": BRP_DEV} if h else None
+
+
+def _api8_failed(handshake, tries):
+    """Record why api8 failed in _api8 (shown on /health) and log it once
+    per distinct reason. ``tries`` is [(a0, err_name or None, detail)]."""
+    names = [n for _a, n, _d in tries if n and n != "SUCCESS"]
+    hs_name = handshake.get("err_name")
+    # the M1's own answer beats a local exception; api8's beats the handshake
+    err_name = (names[0] if names else
+                hs_name if hs_name and hs_name != "SUCCESS" else None)
+    parts = ["a0=%d %s" % (a, d) for a, _n, d in tries]
+    err = "api8 FAIL on a0 2/3/4/5: %s; api6 handshake: %s" % (
+        ", ".join(parts) or "no attempt", handshake.get("detail"))
+    hint = _api8_hint(err_name) or _api8_hint(hs_name)
+    _api8.update(fail_at=time.time(), err=err, err_name=err_name,
+                 handshake=handshake.get("detail"), hint=hint)
+    sig = (err_name, hs_name, tuple(parts))
+    if sig != _api8.get("_logged"):
+        _api8["_logged"] = sig
+        print("lineup: M1 %s dev %s refused or failed: %s%s" % (
+            M1, BRP_DEV, err, (" -> " + hint) if hint else ""), flush=True)
+
+
 def _lineup_raw(force=False):
     if not _m1_ready.is_set():
         raise RuntimeError("M1 not discovered yet")
     if not force and time.time() - _cache["at"] < 300 and _cache["channels"]:
         return _cache["channels"]
     try:
-        brp_handshake()
-    except Exception:
-        pass
-    last_err = None
+        r6 = brp_handshake()
+        n6 = r6.get("err_name") if r6 else None
+        handshake = {"err_name": n6, "detail": n6 or "no reply"}
+    except Exception as e:
+        handshake = {"err_name": None, "detail": "error %r" % (e,)}
+    tries = []
     for a0 in (2, 3, 4, 5):
         try:
             r = brp_call(8, a0=a0, len2=0)
         except Exception as e:
-            last_err = repr(e)
+            tries.append((a0, None, "error %r" % (e,)))
             continue
         body = r.get("body") or b""
-        if r.get("err_name") != "SUCCESS" or not body:
+        name = r.get("err_name")
+        if name != "SUCCESS":
+            tries.append((a0, name, str(name)))
+            continue
+        if not body:
+            tries.append((a0, name, "SUCCESS but empty body"))
             continue
         try:
             chans = json.loads(body)["channels"]
-        except Exception:
+        except Exception as e:
+            tries.append((a0, name, "SUCCESS but bad JSON (%s)" % (
+                type(e).__name__,)))
             continue
         if chans:
             _cache.update(at=time.time(), channels=chans)
-            _api8.update(ok_at=time.time(), err=None, source="api8")
+            _api8.update(ok_at=time.time(), err=None, err_name=None,
+                         handshake=handshake["detail"], hint=None,
+                         source="api8")
+            if _api8.get("_logged"):
+                _api8["_logged"] = None
+                print("lineup: api8 OK again (%d channels)" % len(chans),
+                      flush=True)
             try:
                 with open(LINEUP_CACHE_FILES[0], "w") as fh:
                     json.dump({"m1": M1, "channels": chans}, fh)
             except Exception:
                 pass
             return chans
-    _api8.update(fail_at=time.time(), err=last_err or "api8 FAIL on a0 2/3/4/5")
+        tries.append((a0, name, "SUCCESS but 0 channels"))
+    _api8_failed(handshake, tries)
     for path in LINEUP_CACHE_FILES:
         chans = load_lineup_cache(path, M1)
         if chans:
@@ -751,7 +806,10 @@ class Json(BaseHTTPRequestHandler):
             "api8": {"reachable": api8_ok,
                      "last_ok_age_sec": round(now - _api8["ok_at"], 1) if _api8["ok_at"] else None,
                      "last_fail_age_sec": round(now - _api8["fail_at"], 1) if _api8["fail_at"] else None,
-                     "last_error": _api8["err"], "source": _api8["source"]},
+                     "last_error": _api8["err"], "source": _api8["source"],
+                     "err_name": _api8.get("err_name"),
+                     "handshake": _api8.get("handshake"),
+                     "hint": _api8.get("hint")},
             "lineup": {"channels": nrows, "version": lineup_version(chans) if chans else None},
             "tuner_count": TUNER_COUNT,
             "m1": {"ip": M1, "spec": _m1_info["spec"], "dev": _m1_info["dev"],
