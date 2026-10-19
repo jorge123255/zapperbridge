@@ -160,7 +160,10 @@ documentation range `192.0.2.0/24`.
 | `HDHR_HLS_TUNER` | `1` | add the M1's own tuner as a 4th row (`0` to drop it) |
 | `HDHR_HLS_GUIDE` | `999.1` | guide number for the M1's own tuner |
 | `HDHR_HLS_NAME` | `M1-TUNER4` | call letters for the M1's own tuner |
-| `HDHR_HLS_PROTO` / `HDHR_HLS_SLOT` | `1` / `1` | which M1 HLS window to read |
+| `HDHR_HLS_PROTO` / `HDHR_HLS_SLOT` | `1` / `1` | which M1 HLS window to read (`/atsc<proto>/<slot>/`); use `3` when the M1 itself sits on an ATSC 3.0 channel. fMP4 (3.0) vs MPEG-TS (1.0) is detected from the content, see [docs/ATSC3.md](docs/ATSC3.md) |
+| `ZTUNE_WAIT` | `8` | seconds to wait for the M1's api9 (tune) reply on ATSC 1.0 channels |
+| `ZATSC3_TUNE_WAIT` / `ZATSC3_TUNE_TRIES` | `25` / `1` | api9 wait and attempts for ATSC 3.0 channels (chan_id top nibble 3) |
+| `ZB_AC4_SYNC` | `1` | 999.1 on ATSC 3.0: wrap AC-4 frames in sync frames (`0` = raw frames, like `ffmpeg -c copy`) |
 | `HDHR_TS_DIRECT` | unset | unset = 302 redirect to `:5004`; `1` = serve TS directly from the JSON port too |
 | `HDHR_BRP_DEV` | `02bb00000001` | device id used for the BRP join |
 | `ZM1` | `auto` | M1 IP, or `auto` / `auto:<m1 dev id or ip>` (BRzb discovery) |
