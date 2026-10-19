@@ -119,6 +119,15 @@ registered. It changes nothing and, by default, sends nothing.
   `/data` and env:
   `docker compose exec zapperbridge python3 /app/docker/entrypoint.py discover --listen 15 --apply`,
   then restart the container so the facade joins the newly announced ids.
+  If the ids still differ, the two containers read different `/data` volumes
+  (e.g. the bridge was started with `docker run -v zapperbridge-data:/data`,
+  while `docker compose run` uses the project volume
+  `<project>_zapperbridge-data`). Use `docker exec` / `docker compose exec`
+  into the running bridge, or pin the ids: copy the `dev ...` lines from the
+  bridge's startup log into `[[m1]] devs = [...]`; both paths honour an
+  explicit `devs` list regardless of the seed. Note the ids are keyed on the
+  address form: a literal IP keys on the IP, `auto`/`auto:<dev>` on the entry
+  name, so switching between them changes the derived ids.
   **Why the lineup fails:** `/health` → `api8` now shows `err_name` (the M1's
   answer, e.g. `NOT_FOUND`, `DEVICE_ID_NOT_ALLOWED`, `NOT_SHARED`),
   `handshake` (the api6 result) and a `hint`; the log prints it once per
