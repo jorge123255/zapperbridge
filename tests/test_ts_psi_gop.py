@@ -109,6 +109,7 @@ def parse_pmt(sec):
     assert sec[5] & 0xC0 == 0xC0 and sec[6] == 0 and sec[7] == 0
     pcr = ((sec[8] & 0x1F) << 8) | sec[9]
     pil = ((sec[10] & 0x0F) << 8) | sec[11]
+    prog = bytes(sec[12:12 + pil])
     e = sec[12 + pil:-4]
     es = {}
     while e:
@@ -118,7 +119,7 @@ def parse_pmt(sec):
         es[pid] = (st, bytes(e[5:5 + il]))
         assert len(e) >= 5 + il
         e = e[5 + il:]
-    return ln, pcr, es
+    return ln, pcr, es, prog
 
 
 # ---- tests -------------------------------------------------------------------
@@ -129,8 +130,9 @@ def test_pat_pmt_spec():
     assert progs == {bt.OUT_PROG: bt.OUT_PMT}
     es = {0x81: 0x02, 0x84: 0x81, 0x85: 0x81}
     pmt = bt.mk_pmt(0x81, es)
-    ln, pcr, parsed = parse_pmt(pmt)
+    ln, pcr, parsed, prog = parse_pmt(pmt)
     assert pcr == 0x81
+    assert prog == b""                                   # no program_info carried
     assert parsed[0x81] == (0x02, b"")
     for a in (0x84, 0x85):
         assert parsed[a] == (0x81, b"\x05\x04AC-3"), parsed[a]
@@ -214,7 +216,7 @@ def _check_clip_output(name, out):
     # PSI parses and lists MPEG-2 video + AC-3 audio
     ln, progs = parse_pat(section_of(out[0]))
     assert progs == {1: bt.OUT_PMT}
-    _, pcr, es = parse_pmt(section_of(out[1]))
+    _, pcr, es, _prog = parse_pmt(section_of(out[1]))
     assert pcr == vpid and es[vpid][0] == 0x02
     assert sorted(p for p, (st, _d) in es.items() if st == 0x81) == sorted(apids)
 
@@ -615,6 +617,176 @@ def test_psi_while_waiting():
     parse_pat(section_of(out[0]))
     parse_pmt(section_of(out[1]))
     print("  PSI while waiting: %d PAT in %.2fs before first media" % (n_pat, times[k]))
+
+
+# ---- scrambled (CA / A3SA) programs -----------------------------------------
+VID = 0x81
+SRC_PMT = 0x1F00
+HDR = b"\x00\x00\x00\x00" + bt.K_VIDEO
+#: CA descriptor: tag 0x09, len 4, CA_system_ID, reserved bit, CA_PID. The
+#: system id here is a placeholder; the bridge relays it opaquely either way.
+CA_PROG = b"\x09\x04\x00\x0d\xe0\x10"
+CA_V = b"\x09\x04\x00\x0d\xe0\x11"
+CA_A = b"\x09\x04\x00\x0d\xe0\x12"
+
+
+def mk_src_pmt(prog_desc, es):
+    """A source PMT packet with program_info and per-ES descriptors verbatim."""
+    body = bytearray(b"\x00\x01\xc1\x00\x00")
+    body += bytes([0xE0 | (VID >> 8), VID & 0xFF,
+                   0xF0 | (len(prog_desc) >> 8), len(prog_desc) & 0xFF]) + prog_desc
+    for pid, (st, desc) in es.items():
+        body += bytes([st, 0xE0 | (pid >> 8), pid & 0xFF,
+                       0xF0 | (len(desc) >> 8), len(desc) & 0xFF]) + desc
+    sec = bytearray([0x02, 0xB0 | ((len(body) + 4) >> 8 & 0x0F),
+                     (len(body) + 4) & 0xFF]) + body
+    sec += crc32_bitwise(sec).to_bytes(4, "big")
+    assert len(sec) <= 183
+    p = bytearray(b"\xff" * 188)
+    p[0] = 0x47
+    p[1] = 0x40 | ((SRC_PMT >> 8) & 0x1F)
+    p[2] = SRC_PMT & 0xFF
+    p[3] = 0x10
+    p[4] = 0x00                              # pointer_field
+    p[5:5 + len(sec)] = sec
+    return bytes(p)
+
+
+def mk_media(pid, fill=b"\xaa", cc=0):
+    """A video PES with no MPEG-2 start code at all (scrambled payload)."""
+    pes = b"\x00\x00\x01\xe0\x00\x00\x80\x80\x05\x21\x00\x01\x00\x01" + fill * 100
+    body = pes.ljust(184, fill[:1] or b"\xff")[:184]
+    return b"\x47" + bytes([0x40 | ((pid >> 8) & 0x1F), pid & 0xFF, 0x10 | cc]) + body
+
+
+def run_ca(prog_desc, es):
+    """Push a source PMT plus media, then drain the real output path."""
+    s = bt.Session("ca")
+    s.push(bt.K_VIDEO, HDR, mk_src_pmt(prog_desc, es))
+    s.push(bt.K_VIDEO, HDR, mk_media(VID))
+    s.push(bt.K_VIDEO, HDR, mk_media(VID, b"\xbb", cc=1))
+    out = []
+    for p in s.packets():
+        out.append(p)
+        if not any(s.q.values()):
+            s.last_push = 0                  # drained -> stale -> end
+    return out, s
+
+
+def test_pmt_carries_ca_descriptors():
+    es = {VID: (0x24, CA_V), 0x84: (0x81, CA_A), 0x85: (0x81, b"")}
+    out, s = run_ca(CA_PROG, es)
+    pmt = section_of(next(p for p in out if pid_of(p) == bt.OUT_PMT))
+    _ln, pcr, parsed, prog = parse_pmt(pmt)
+    assert prog == CA_PROG, prog                       # program CA survives
+    assert parsed[VID] == (0x24, CA_V), parsed[VID]    # ES CA survives
+    assert parsed[0x84] == (0x81, CA_A + b"\x05\x04AC-3"), parsed[0x84]
+    # a clear ES with no source descriptors keeps the old AC-3 registration
+    assert parsed[0x85] == (0x81, b"\x05\x04AC-3"), parsed[0x85]
+    assert pcr == VID
+    assert s.es == {VID: 0x24, 0x84: 0x81, 0x85: 0x81}
+    assert s.encrypted is True
+    assert s.prog_desc == CA_PROG and s.es_desc[VID] == CA_V
+    json.dumps(s.stats())                              # stats stay serialisable
+    print("  PMT carries program + ES CA descriptors (%d B)" % len(pmt))
+
+
+def test_ca_skips_gop_gate():
+    out, s = run_ca(CA_PROG, {VID: (0x24, CA_V)})
+    # the gate went straight to pass with the CA reason, not gop/budget/eos
+    assert s.gate.state == bt.GopGate.PASS and s.gate.reason == "ca", s.gate.reason
+    assert s.gate.dropped_video == 0 and s.gate.wait_sec < 0.5, s.gate.wait_sec
+    media = [p for p in out if pid_of(p) == VID]
+    assert [p[4:] for p in media] == [mk_media(VID)[4:], mk_media(VID, b"\xbb", cc=1)[4:]]
+    # same for scrambled MPEG-2 video: no readable GOP header, still no wait
+    out2, s2 = run_ca(CA_PROG, {VID: (0x02, CA_V)})
+    assert s2.gate.state == bt.GopGate.PASS and s2.gate.reason == "ca", s2.gate.reason
+    assert len([p for p in out2 if pid_of(p) == VID]) == 2
+    print("  CA session passed through, gate=%s/%s in %.3fs" % (
+        s.gate.state, s.gate.reason, s.gate.wait_sec))
+
+
+def test_clear_pmt_still_waits():
+    out, s = run_ca(b"", {VID: (0x02, b"")})
+    assert s.encrypted is False
+    # no random-access point: held until end of stream, then released by flush
+    assert s.gate.reason == "eos" and 0 < s.gate.wait_sec < 3, s.gate.reason
+    media = [i for i, p in enumerate(out) if pid_of(p) == VID]
+    assert len(media) == 2 and media[0] > 0
+    assert all(pid_of(p) in (bt.OUT_PAT, bt.OUT_PMT) for p in out[:media[0]])
+    print("  clear session still waits for a GOP (released by flush only)")
+
+
+def test_pmt_too_big_falls_back():
+    """A descriptor block that no longer fits one TS packet drops the
+    descriptors instead of emitting a truncated (corrupt) section."""
+    fat = b"\x05\x1e" + b"X" * 30
+    pids = [0x100 + i for i in range(12)]
+    pmt = bt.mk_pmt(pids[0], {p: 0x81 for p in pids}, prog_desc=CA_PROG,
+                    es_desc={p: fat for p in pids})
+    assert len(pmt) <= 184, len(pmt)
+    ln, pcr, parsed, prog = parse_pmt(pmt)
+    assert ln == len(pmt) - 3
+    assert prog == b"" and parsed[0x100] == (0x81, b"\x05\x04AC-3")
+    print("  oversized PMT fell back to %d B" % len(pmt))
+
+
+def test_pmt_oversize_never_recurses():
+    """A plain descriptor-less PMT of 34 ES is already over one packet: the
+    fallback must not call itself and must still emit a valid section."""
+    pids = [0x100 + i for i in range(34)]
+    es = {p: 0x02 for p in pids}
+    pmt = bt.mk_pmt(0x100, es)                      # was RecursionError
+    assert len(pmt) <= 184, len(pmt)
+    ln, pcr, parsed, prog = parse_pmt(pmt)
+    assert ln == len(pmt) - 3 and pcr == 0x100 and prog == b""
+    assert parsed and sorted(parsed) == sorted(parsed)
+    # highest PIDs are shed first, the PCR PID's row survives
+    assert 0x100 in parsed and list(parsed) == sorted(parsed)
+    # and the same with descriptors on every ES
+    fat = b"\x05\x1e" + b"X" * 30
+    pmt2 = bt.mk_pmt(0x100, es, prog_desc=CA_PROG, es_desc={p: fat for p in pids})
+    assert len(pmt2) <= 184 and parse_pmt(pmt2)[1] == 0x100
+    print("  oversize PMT: %d B, %d of %d ES kept" % (len(pmt), len(parsed), len(pids)))
+
+
+def test_clear_ac3_keeps_source_descriptors():
+    """A non-empty source block on a clear 0x81 ES is kept and the AC-3
+    registration descriptor is appended, not replaced."""
+    lang = b"\x0a\x04eng\x00"
+    pmt = bt.mk_pmt(VID, {VID: 0x02, 0x84: 0x81}, es_desc={0x84: lang})
+    _ln, _pcr, parsed, _prog = parse_pmt(pmt)
+    assert parsed[0x84] == (0x81, lang + b"\x05\x04AC-3"), parsed[0x84]
+    # already-present registration is not duplicated
+    pmt = bt.mk_pmt(VID, {0x84: 0x81}, es_desc={0x84: b"\x05\x04AC-3" + lang})
+    assert parse_pmt(pmt)[2][0x84] == (0x81, b"\x05\x04AC-3" + lang)
+    # a CA descriptor on the audio ES is copied and AC-3 reg still appended
+    pmt = bt.mk_pmt(VID, {0x84: 0x81}, es_desc={0x84: CA_A})
+    assert parse_pmt(pmt)[2][0x84] == (0x81, CA_A + b"\x05\x04AC-3")
+    print("  AC-3 registration kept alongside source descriptors")
+
+
+def test_later_clear_pmt_resets_ca():
+    """A second, clear PMT on the same session drops the stale CA state."""
+    s = bt.Session("ca-then-clear")
+    s.push(bt.K_VIDEO, HDR, mk_src_pmt(CA_PROG, {VID: (0x02, CA_V)}))
+    assert s.encrypted is True and s.es_desc == {VID: CA_V}
+    clear = mk_src_pmt(b"", {VID: (0x02, b""), 0x85: (0x81, b"")})
+    clear = clear[:3] + bytes([(clear[3] + 1) & 0x0F]) + clear[4:]
+    s.push(bt.K_VIDEO, HDR, clear)                  # same PMT PID, next version
+    assert s.encrypted is False, s.encrypted
+    assert s.prog_desc == b"" and s.es_desc == {}, (s.prog_desc, s.es_desc)
+    s.push(bt.K_VIDEO, HDR, mk_media(VID))
+    out = []
+    for p in s.packets():
+        out.append(p)
+        if not any(s.q.values()):
+            s.last_push = 0
+    for pmt in (section_of(p) for p in out if pid_of(p) == bt.OUT_PMT):
+        _ln, _pcr, parsed, prog = parse_pmt(pmt)
+        assert prog == b"" and not any(bt.has_ca(d) for _s, d in parsed.values())
+        assert parsed[VID] == (0x02, b"")
+    print("  later clear PMT cleared encrypted/es_desc")
 
 
 if __name__ == "__main__":

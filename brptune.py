@@ -200,20 +200,75 @@ def mk_pat(pmt_pid, ver=0):
     return _section(0x00, body)
 
 
-def mk_pmt(pcr_pid, es, ver=0):
-    """Spec-correct PMT (section_number/last_section_number present, reserved
-    bits set, version in the right bits). AC-3 (0x81) gets the ATSC 'AC-3'
-    registration descriptor."""
+def has_ca(desc):
+    """True if a descriptor loop holds a CA descriptor (tag 0x09), i.e. the
+    program/ES is scrambled and the client must license it."""
+    q = 0
+    while q + 2 <= len(desc):
+        if desc[q] == 0x09:
+            return True
+        q += 2 + desc[q + 1]
+    return False
+
+
+def has_ac3_reg(desc):
+    """True if a descriptor loop already carries the ATSC 'AC-3'
+    registration descriptor (tag 0x05, 'AC-3')."""
+    q = 0
+    while q + 2 <= len(desc):
+        if desc[q] == 0x05 and desc[q + 1] == 4 and desc[q + 2:q + 6] == b"AC-3":
+            return True
+        q += 2 + desc[q + 1]
+    return False
+
+
+#: A PMT must fit one 188-byte packet: 188 minus the 4-byte TS header and the
+#: pointer_field. A longer section would be truncated by psi_packet().
+PMT_MAX = 183
+
+
+def _pmt_section(pcr_pid, es, ver, prog_desc, es_desc):
+    prog_desc = prog_desc[:0x0FFF]
     body = bytearray()
     body += bytes([OUT_PROG >> 8, OUT_PROG & 0xFF])
     body.append(0xC1 | ((ver & 0x1F) << 1))
     body += b"\x00\x00"
-    body += bytes([0xE0 | (pcr_pid >> 8), pcr_pid & 0xFF, 0xF0, 0x00])
+    body += bytes([0xE0 | (pcr_pid >> 8), pcr_pid & 0xFF,
+                   0xF0 | (len(prog_desc) >> 8), len(prog_desc) & 0xFF])
+    body += prog_desc
     for pid, st in sorted(es.items()):
-        desc = REG_AC3 if st == 0x81 else b""
+        desc = es_desc.get(pid) or b""
+        if st == 0x81 and not has_ac3_reg(desc):
+            desc += REG_AC3
+        desc = desc[:0x0FFF]
         body += bytes([st, 0xE0 | (pid >> 8), pid & 0xFF,
                        0xF0 | (len(desc) >> 8), len(desc) & 0xFF]) + desc
     return _section(0x02, body)
+
+
+def mk_pmt(pcr_pid, es, ver=0, prog_desc=b"", es_desc=None):
+    """Spec-correct PMT (section_number/last_section_number present, reserved
+    bits set, version in the right bits).
+
+    ``prog_desc`` and ``es_desc`` (pid -> bytes) are the source PMT's
+    program_info and per-ES descriptor blocks, carried through unchanged so a
+    CA descriptor (0x09, A3SA) reaches the client. An AC-3 (0x81) ES keeps its
+    source descriptors and also gets the ATSC 'AC-3' registration descriptor
+    unless the block already carries one. Descriptor payloads are opaque here:
+    the bridge never reads CA_system_ID/CA_PID, it relays them and the client
+    verifies the broadcast signaling itself.
+
+    The section has to fit one packet, so an oversized PMT sheds descriptors
+    and then, if still too long, trailing ES rows (never recursing)."""
+    out = _pmt_section(pcr_pid, es, ver, prog_desc, es_desc or {})
+    if len(out) <= PMT_MAX:
+        return out
+    out = _pmt_section(pcr_pid, es, ver, b"", {})      # drop all descriptors
+    pids = sorted(es)
+    while len(out) > PMT_MAX and pids:
+        pids.pop()                                     # shed the highest rows
+        out = _pmt_section(pcr_pid, {p: es[p] for p in pids}, ver, b"", {})
+    return out
 
 
 def psi_packet(pid, section, cc):
@@ -439,6 +494,14 @@ class GopGate:
         out, self.held, self.cand = self.held, [], None
         return out
 
+    def passthrough(self, reason="ca"):
+        """Give up gating and release what is held. Used for scrambled (CA)
+        programs, whose payload has no readable MPEG-2 GOP start code.
+        Idempotent; returns the held packets once."""
+        if self.state == self.PASS:
+            return []
+        return self._pass(reason)
+
     def tick(self):
         """Budget check without a packet (idle queues). Returns packets."""
         if self.state == self.WAIT and self.t0 is not None \
@@ -630,6 +693,12 @@ class Session:
         self.lock = threading.Lock()
         self.q = {}
         self.es = {}
+        #: source PMT program_info and per-ES descriptor blocks (pid -> bytes),
+        #: relayed unchanged so CA descriptors survive the rebuild
+        self.prog_desc = b""
+        self.es_desc = {}
+        #: the program is CA-scrambled (a CA descriptor 0x09 was seen)
+        self.encrypted = False
         self.pmt_pid = None
         self.pcr_pid = None
         self.meta = {}
@@ -659,7 +728,7 @@ class Session:
     def _learn(self, pid, data, off):
         """Parse PAT/PMT only. PES payloads start 00 00 01 xx and must not be
         mistaken for a PAT, so require section_syntax_indicator + valid ids."""
-        if pid in self.es:
+        if pid in self.es and pid not in (self.pmt_pid, self.src_pat_pid):
             return
         ptr = data[off]
         b = data[off + 1 + ptr:]
@@ -690,14 +759,26 @@ class Session:
                 es = self._es_list(sec[base + plen:])
                 if es is not None:
                     self.pcr_pid = pcr
-                    for ep, st in es:
+                    #: descriptor state is per PMT: a later clear version must
+                    #: not inherit a stale CA block
+                    prog_desc = sec[base:base + plen]
+                    ca = has_ca(prog_desc)
+                    descs = {}
+                    for ep, st, desc in es:
                         if ep not in (OUT_PAT, OUT_PMT):
                             self.es[ep] = st
+                            if desc:
+                                descs[ep] = desc
+                                ca = ca or has_ca(desc)
+                    self.prog_desc = prog_desc
+                    self.es_desc = descs
+                    self.encrypted = ca
                     return
 
     @staticmethod
     def _es_list(e):
-        """ES loop must consume the section exactly (4 trailing CRC bytes)."""
+        """ES loop must consume the section exactly (4 trailing CRC bytes).
+        Returns [(pid, stream_type, descriptors)]."""
         out = []
         while len(e) > 4:
             if len(e) < 5:
@@ -706,7 +787,7 @@ class Session:
             el = ((e[3] & 0x0F) << 8) | e[4]
             if ep == 0x1FFF or ep > 0x1FFF or 5 + el >= len(e):
                 return None
-            out.append((ep, e[0]))
+            out.append((ep, e[0], bytes(e[5:5 + el])))
             e = e[5 + el:]
         return out if out else None
 
@@ -787,7 +868,8 @@ class Session:
     def stats(self):
         return {"chan_id": self.chan_id, "pushes": self.npush, "bytes": self.nbytes,
                 "pids": sorted(self.q), "es": self.es, "pmt": self.pmt_pid,
-                "pcr": self.pcr_pid, "gop_gate": self.gate_stats(), "kinds": {k.hex(): v for k, v in self.kinds.items()}}
+                "pcr": self.pcr_pid, "ca": self.encrypted,
+                "gop_gate": self.gate_stats(), "kinds": {k.hex(): v for k, v in self.kinds.items()}}
 
     def gate_stats(self):
         g = self.gate
@@ -805,6 +887,8 @@ class Session:
         #: [time of last PSI, media packets since last PSI, media since PSI (any)]
         last = [0.0, 0, 0]
         es, pcr_pid = {}, None
+        #: snapshot of the source descriptor blocks, handled with ``es``
+        pd, ed, enc = b"", {}, False
         il = (tsinterleave.Interleaver(clock=self.clock, wait=IL_WAIT,
                                  audio_lead=IL_AUDIO_LEAD)
               if INTERLEAVE else None)
@@ -818,7 +902,8 @@ class Session:
             last[0], last[1], last[2] = now, 0, 0
             a = psi_packet(OUT_PAT, mk_pat(OUT_PMT), cc[OUT_PAT])
             cc[OUT_PAT] = (cc[OUT_PAT] + 1) & 0x0F
-            b = psi_packet(OUT_PMT, mk_pmt(pcr_pid, es), cc[OUT_PMT])
+            b = psi_packet(OUT_PMT, mk_pmt(pcr_pid, es, prog_desc=pd, es_desc=ed),
+                           cc[OUT_PMT])
             cc[OUT_PMT] = (cc[OUT_PMT] + 1) & 0x0F
             return (a, b)
 
@@ -843,8 +928,14 @@ class Session:
                 with self.lock:
                     es = dict(self.es)
                     pcr_pid = self.pcr_pid
+                    pd, ed = self.prog_desc, dict(self.es_desc)
+                    enc = self.encrypted
                 if pcr_pid is None:
                     pcr_pid = next((p for p, s in es.items() if s in (0x02, 0x1B, 0x24, 0x0F)), None)
+                if enc:
+                    # scrambled program: no readable GOP start code, pass through
+                    for p in emit(gate.passthrough(), es, pcr_pid):
+                        yield p
                 if il is not None and il.pending():
                     for q in il.pop(final=True):
                         for p in emit(gate.feed(q, es), es, pcr_pid):
@@ -867,6 +958,8 @@ class Session:
                         runs.append([q.popleft() for _ in range(min(len(q), CHUNK))])
                 es = dict(self.es)
                 pmt_pid, pcr_pid = self.pmt_pid, self.pcr_pid
+                pd, ed = self.prog_desc, dict(self.es_desc)
+                enc = self.encrypted
             if il is not None:
                 # runs are in sorted-PID order; per-PID packet order is kept
                 for r in runs:
@@ -881,6 +974,10 @@ class Session:
                             batch.append(r.pop(0))
             if pcr_pid is None:
                 pcr_pid = next((p for p, s in es.items() if s in (0x02, 0x1B, 0x24, 0x0F)), None)
+            if enc:
+                # scrambled program: stop waiting for a GOP start code
+                for p in emit(gate.passthrough(), es, pcr_pid):
+                    yield p
             if not batch:
                 for p in emit(gate.tick(), es, pcr_pid):
                     yield p
